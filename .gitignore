@@ -1,0 +1,12 @@
+# Local configuration -- contains server.token, never commit it.
+# Start from config.example.toml instead.
+config.toml
+
+# Recorded history
+*.db
+*.db-wal
+*.db-shm
+
+__pycache__/
+*.pyc
+.DS_Store

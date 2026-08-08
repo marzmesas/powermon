@@ -1,0 +1,15 @@
+# Let unprivileged processes read the CPU energy counter, so powermon can report
+# MEASURED cpu watts instead of estimating them from utilisation.
+#
+# Install:
+#   sudo cp /home/marzmesas/powermon/90-rapl-readable.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=powercap
+#   systemctl --user restart powermon
+#
+# Security note: these counters were restricted (CVE-2020-8694) because a very
+# high-frequency reader can mount a power side-channel attack against crypto
+# running on the same machine. powermon samples every 2 s, which is many orders of
+# magnitude too slow to be useful for that. On a single-user training box the
+# trade-off is normally fine; skip this rule on a shared or multi-tenant host and
+# powermon will fall back to the estimate.
+SUBSYSTEM=="powercap", KERNEL=="*rapl*", ACTION=="add", RUN+="/bin/chmod g+r,o+r %S%p/energy_uj"

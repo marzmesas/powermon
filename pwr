@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""pwr - terminal readout of the powermon service.
+
+  pwr            one snapshot
+  pwr -w         live, refreshes every 2s (Ctrl-C to quit)
+  pwr --json     raw JSON from the API
+  pwr --url URL  point at a different host (default: from config.toml)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+BLOCKS = "▁▂▃▄▅▆▇█"
+RESET, DIM, BOLD = "\033[0m", "\033[2m", "\033[1m"
+BLUE, ORANGE, GREEN, RED = "\033[38;5;33m", "\033[38;5;209m", "\033[38;5;35m", "\033[38;5;167m"
+
+
+def default_url() -> str:
+    host, port = "127.0.0.1", 8787
+    cfg = HERE / "config.toml"
+    if cfg.exists():
+        section = None
+        for raw in cfg.read_text(encoding="utf-8").splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if line.startswith("["):
+                section = line.strip("[]").strip()
+            elif section == "server" and "=" in line:
+                key, val = (p.strip() for p in line.split("=", 1))
+                if key == "port":
+                    port = int(float(val))
+                elif key == "host":
+                    stripped = val.strip("\"'")
+                    host = "127.0.0.1" if stripped == "0.0.0.0" else stripped
+    return f"http://{host}:{port}"
+
+
+def fetch(url: str) -> dict:
+    with urllib.request.urlopen(url + "/api/now", timeout=8) as resp:
+        return json.load(resp)
+
+
+def spark(values: list, width: int = 22) -> str:
+    pts = [v for v in values if v is not None]
+    if len(pts) < 2:
+        return " " * width
+    step = max(1, len(pts) // width)
+    sampled = pts[-width * step::step][-width:]
+    lo, hi = min(sampled), max(sampled)
+    span = (hi - lo) or 1.0
+    return "".join(BLOCKS[min(7, int((v - lo) / span * 7.99))] for v in sampled)
+
+
+def bar(frac: float, width: int = 10) -> str:
+    filled = max(0, min(width, round(frac * width)))
+    return "█" * filled + "░" * (width - filled)
+
+
+def render(d: dict, color: bool = True) -> str:
+    def c(code: str, s: str) -> str:
+        return f"{code}{s}{RESET}" if color else s
+
+    p, sym = d["power"], d["meta"]["symbol"]
+    gpu, cpu, tot = d["gpu"], d["cpu"], d["totals"]
+    inner = 44
+    lines = []
+    title = f" {d['meta']['host']} · {'training' if d['busy'] else 'idle'} "
+    lines.append("┌─" + title + "─" * (inner - len(title) + 1) + "┐")
+
+    def row(text_plain: str, text_colored: str | None = None) -> None:
+        pad = inner - len(text_plain)
+        lines.append("│ " + (text_colored or text_plain) + " " * max(0, pad) + " │")
+
+    row(f"NOW   {p['total_w']:>5.0f} W     {sym}{p['cost_per_h']:.3f}/h",
+        c(BOLD, f"NOW   {p['total_w']:>5.0f} W") + f"     {sym}{p['cost_per_h']:.3f}/h")
+
+    gpu_temp = f"{gpu['temp']:.0f}" if gpu.get("temp") is not None else "--"
+    row(f"GPU   {p['gpu_w']:>5.0f} W  {spark(d['spark']['gpu'], 12)}  {gpu_temp:>3} °C",
+        c(BLUE, f"GPU   {p['gpu_w']:>5.0f} W") + f"  {spark(d['spark']['gpu'], 12)}  {gpu_temp:>3} °C")
+    cpu_temp = f"{cpu['temp']:.0f}" if cpu.get("temp") is not None else "--"
+    row(f"CPU   {p['cpu_w']:>5.0f} W  {spark(d['spark']['cpu'], 12)}  {cpu_temp:>3} °C",
+        c(ORANGE, f"CPU   {p['cpu_w']:>5.0f} W") + f"  {spark(d['spark']['cpu'], 12)}  {cpu_temp:>3} °C")
+    row(f"rest  {p['other_w']:>5.0f} W  board, RAM, drives, PSU loss",
+        c(GREEN, f"rest  {p['other_w']:>5.0f} W") + "  board, RAM, drives, PSU loss")
+
+    lines.append("├" + "─" * (inner + 2) + "┤")
+    util = gpu.get("util") or 0
+    row(f"GPU load  {bar(util / 100)} {util:>3.0f}%   mem {(gpu.get('mem_used') or 0)/1024:>4.1f}/"
+        f"{(gpu.get('mem_total') or 0)/1024:.0f} GiB")
+    row(f"CPU load  {bar(cpu['pct'] / 100)} {cpu['pct']:>3.0f}%   RAM "
+        f"{d['mem']['used_gib']:>4.1f}/{d['mem']['total_gib']:.0f} GiB")
+
+    lines.append("├" + "─" * (inner + 2) + "┤")
+    row(f"Today     {tot['today']['kwh']:>7.2f} kWh   {sym}{tot['today']['cost']:>7.2f}")
+    row(f"Month     {tot['month']['kwh']:>7.2f} kWh   {sym}{tot['month']['cost']:>7.2f}")
+    row(f"Projected {tot['month']['projected_30d_kwh']:>7.1f} kWh   "
+        f"{sym}{tot['month']['projected_30d_cost']:>7.2f}")
+    idle_share = 100 * tot["month"]["idle_kwh"] / tot["month"]["kwh"] if tot["month"]["kwh"] else 0
+    row(f"Idle      {idle_share:>7.1f} %     {sym}{tot['month']['cost'] * idle_share / 100:>7.2f}")
+    lines.append("└" + "─" * (inner + 2) + "┘")
+
+    src = "CPU measured (RAPL)" if p["source"] == "rapl" else "CPU estimated from load"
+    lines.append(c(DIM, f"{sym}{d['meta']['rate']}/kWh · {src} · "
+                        f"uptime {d['meta']['uptime_s'] / 86400:.1f}d"))
+    return "\n".join(lines)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="terminal readout of the powermon service")
+    ap.add_argument("-w", "--watch", action="store_true", help="refresh until interrupted")
+    ap.add_argument("-n", "--interval", type=float, default=2.0, help="watch interval (s)")
+    ap.add_argument("--json", action="store_true", help="print the raw API payload")
+    ap.add_argument("--url", default=default_url(), help="powermon base URL")
+    args = ap.parse_args()
+
+    color = sys.stdout.isatty()
+    try:
+        if args.json:
+            print(json.dumps(fetch(args.url), indent=2))
+            return 0
+        if not args.watch:
+            print(render(fetch(args.url), color))
+            return 0
+        print("\033[?25l", end="")  # hide cursor
+        try:
+            while True:
+                frame = render(fetch(args.url), color)
+                sys.stdout.write("\033[H\033[J" + frame + "\n")
+                sys.stdout.flush()
+                time.sleep(max(0.5, args.interval))
+        except KeyboardInterrupt:
+            return 0
+        finally:
+            print("\033[?25h", end="")
+    except urllib.error.URLError as exc:
+        print(f"pwr: cannot reach powermon at {args.url} ({exc.reason})\n"
+              f"     start it with:  systemctl --user start powermon", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,49 @@
+# powermon configuration -- copy to config.toml and edit.
+#   cp config.example.toml config.toml
+# Then restart:  systemctl --user restart powermon
+
+[server]
+# 127.0.0.1 = this machine only (use an SSH tunnel to reach it remotely).
+# 0.0.0.0   = every interface, including Tailscale. ONLY do this with a token set.
+host = "127.0.0.1"
+port = 8787
+# Required for any client that is not on this machine. Empty = loopback only.
+# Generate one with:  python3 -c "import secrets; print(secrets.token_urlsafe(18))"
+token = ""
+
+[sampling]
+interval = 2.0             # seconds between samples
+raw_retention_days = 7     # raw 2s samples kept this long; hourly totals are kept forever
+gap_max_s = 60.0           # gaps longer than this are not counted as energy (service down)
+
+[tariff]
+currency = "EUR"
+symbol = "€"
+mode = "flat"
+rate = 0.15                # <-- your price per kWh
+standing_charge_per_day = 0.0   # optional fixed daily fee, added to day/month cost
+
+[power]
+psu_efficiency = 0.90      # 80+ Gold at partial load ~0.89-0.92; wall = dc_power / efficiency
+baseline_w = 35.0          # DC draw of everything that is not CPU or GPU:
+                           # motherboard, RAM, drives, fans, chipset, USB.
+                           # Calibrate with a plug meter at idle:
+                           # baseline = idle_wall*eff - cpu_w - gpu_w
+
+[cpu]
+rapl_scale = 1.0           # RAPL package can under-read socket draw on Zen 2.
+                           # If you have a plug meter, set = (measured - gpu - baseline) / rapl_reading
+# Fallback model, used only when RAPL is not readable (see README: udev rule).
+# Defaults below are for a Ryzen 9 3900X (142 W PPT) -- adjust for your CPU.
+idle_w = 30.0
+max_w = 142.0
+curve_exp = 1.25
+
+[gpu]
+enabled = true
+
+[activity]
+# A sample counts as "training" (busy) when the GPU is doing real work.
+# Lets the dashboard split cost into work vs idle-but-powered-on.
+busy_gpu_util = 15         # percent
+busy_gpu_power_w = 80      # watts

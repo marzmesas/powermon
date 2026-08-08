@@ -1,0 +1,954 @@
+<!doctype html>
+<html lang="en" data-theme="">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>powermon</title>
+<style>
+  /* ---- palette: validated reference instance, slots 1-3 (blue / orange / aqua) ---- */
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --plane: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --series-gpu: #2a78d6;
+    --series-cpu: #eb6834;
+    --series-other: #1baf7a;
+    --track: #cde2fb;
+    --status-good: #0ca30c;
+    --status-warning: #fab219;
+    --status-serious: #ec835a;
+    --status-critical: #d03b3b;
+    --shadow: 0 1px 2px rgba(11,11,11,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --plane: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --series-gpu: #3987e5;
+      --series-cpu: #d95926;
+      --series-other: #199e70;
+      --track: #184f95;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --plane: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-gpu: #3987e5;
+    --series-cpu: #d95926;
+    --series-other: #199e70;
+    --track: #184f95;
+    --shadow: none;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 20px 20px 56px;
+    background: var(--plane);
+    color: var(--text-primary);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  /* ---- header ---- */
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+  .host { color: var(--text-secondary); font-size: 13px; }
+  .spacer { flex: 1; }
+  .pill {
+    font-size: 11.5px; color: var(--text-secondary); border: 1px solid var(--border);
+    border-radius: 999px; padding: 2px 9px; background: var(--surface-1); white-space: nowrap;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--status-good);
+         display: inline-block; margin-right: 5px; vertical-align: 1px; }
+  .dot.stale { background: var(--status-critical); }
+  button {
+    font: inherit; font-size: 12.5px; color: var(--text-secondary); cursor: pointer;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 7px;
+    padding: 4px 10px;
+  }
+  button:hover { color: var(--text-primary); }
+  button[aria-pressed="true"], button.on {
+    color: var(--text-primary); border-color: var(--text-muted); font-weight: 600;
+  }
+  button:focus-visible { outline: 2px solid var(--series-gpu); outline-offset: 1px; }
+
+  /* ---- cards ---- */
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px 18px; box-shadow: var(--shadow);
+  }
+  .grid { display: grid; gap: 14px; }
+  .label {
+    font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--text-muted); font-weight: 600;
+  }
+
+  /* ---- hero ---- */
+  .hero { display: grid; grid-template-columns: minmax(210px, 1fr) 1fr; gap: 22px; align-items: end; }
+  .hero-num { font-size: 60px; line-height: 1; font-weight: 600; letter-spacing: -.02em; }
+  .hero-num .u { font-size: 22px; font-weight: 500; color: var(--text-secondary); margin-left: 4px; }
+  .hero-sub { color: var(--text-secondary); margin-top: 8px; font-size: 13px; }
+  .hero-spark { width: 100%; height: 68px; display: block; }
+  .rate-row { display: flex; gap: 26px; flex-wrap: wrap; margin-top: 6px; }
+  .rate-row div span { display: block; }
+  .rate-big { font-size: 21px; font-weight: 600; }
+
+  /* ---- meters ---- */
+  .meters { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .meter-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .meter-val { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .track { height: 7px; border-radius: 4px; background: var(--track); overflow: hidden; margin-top: 8px; }
+  .fill { height: 100%; border-radius: 4px; background: var(--series-gpu); transition: width .4s ease; }
+  .fill.warn { background: var(--status-warning); }
+  .fill.crit { background: var(--status-critical); }
+  .meter-sub { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+
+  /* ---- stat tiles ---- */
+  .tiles { grid-template-columns: repeat(auto-fit, minmax(172px, 1fr)); }
+  .tile-val { font-size: 27px; font-weight: 600; line-height: 1.15; margin-top: 3px; }
+  .tile-val .u { font-size: 14px; font-weight: 500; color: var(--text-secondary); margin-left: 3px; }
+  .tile-sub { font-size: 12.5px; color: var(--text-secondary); margin-top: 4px; }
+
+  /* ---- charts ---- */
+  .filters {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin: 26px 0 14px;
+  }
+  .filters .label { margin-right: 4px; }
+  .chart-card { margin-bottom: 14px; }
+  .chart-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 2px; }
+  .chart-title { font-size: 14px; font-weight: 600; }
+  .chart-note { font-size: 12.5px; color: var(--text-muted); }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 8px 0 4px; font-size: 12.5px;
+            color: var(--text-secondary); }
+  .legend span.key { display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+                     margin-right: 6px; vertical-align: -2px; }
+  .legend span.key.line { height: 2px; width: 14px; border-radius: 2px; vertical-align: 3px; }
+  .plot-wrap { position: relative; }
+  /* pan-y, not none: a vertical swipe starting on a chart must still scroll the
+     page on a phone, while a horizontal drag drives the crosshair */
+  svg.plot { width: 100%; display: block; touch-action: pan-y; }
+  svg.plot:focus-visible { outline: 2px solid var(--series-gpu); outline-offset: 2px; }
+  .loading { opacity: .55; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .axisline { stroke: var(--axis); stroke-width: 1; }
+  .tick { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .tick.y { text-anchor: end; }
+  .dlabel { fill: var(--text-secondary); font-size: 11.5px; font-weight: 600; }
+  .band-gpu { fill: var(--series-gpu); }
+  .band-cpu { fill: var(--series-cpu); }
+  .band-other { fill: var(--series-other); }
+  .edge-gpu { stroke: var(--series-gpu); }
+  .edge-cpu { stroke: var(--series-cpu); }
+  .edge-other { stroke: var(--series-other); }
+  .edge { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .bar { fill: var(--series-gpu); }
+  .bar.hot { fill: var(--series-cpu); }
+  .crosshair { stroke: var(--text-muted); stroke-width: 1; }
+  .cdot { stroke: var(--surface-1); stroke-width: 2; }
+  .tooltip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity .12s;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 9px;
+    padding: 9px 11px; box-shadow: 0 6px 20px rgba(0,0,0,.18); min-width: 148px; z-index: 5;
+  }
+  .tooltip.show { opacity: 1; }
+  .tt-when { font-size: 11.5px; color: var(--text-muted); margin-bottom: 6px;
+             font-variant-numeric: tabular-nums; }
+  .tt-row { display: flex; align-items: baseline; gap: 7px; margin-top: 3px; font-size: 12.5px; }
+  .tt-row .k { width: 14px; height: 2px; border-radius: 2px; flex: none; }
+  .tt-row .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tt-row .n { color: var(--text-secondary); }
+  .tt-row.total { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 5px; }
+
+  /* ---- tables ---- */
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px;
+          font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--grid); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--text-muted); font-weight: 600; font-size: 11.5px;
+       text-transform: uppercase; letter-spacing: .05em; }
+  .table-scroll { max-height: 320px; overflow: auto; margin-top: 10px; }
+  .hidden { display: none; }
+  footer { margin-top: 26px; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+  code { font-size: 11.5px; background: var(--surface-1); border: 1px solid var(--border);
+         border-radius: 4px; padding: 1px 4px; }
+  @media (max-width: 720px) { .hero { grid-template-columns: 1fr; } .hero-num { font-size: 46px; } }
+  @media (max-width: 560px) {
+    body { padding: 14px 12px 40px; }
+    .card { padding: 13px 14px; border-radius: 10px; }
+    .hero-num { font-size: 42px; }
+    .rate-row { gap: 18px; }
+    .tile-val { font-size: 24px; }
+    header { gap: 8px; row-gap: 6px; }
+    .filters { gap: 6px; margin: 20px 0 12px; }
+    .filters button { padding: 5px 9px; }
+    .legend { gap: 12px; font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>powermon</h1>
+  <span class="host" id="host">-</span>
+  <span class="pill" id="live"><span class="dot" id="dot"></span><span id="live-txt">connecting</span></span>
+  <span class="pill" id="cpu-src" title="How CPU power is obtained">-</span>
+  <span class="pill" id="tariff-pill">-</span>
+  <span class="spacer"></span>
+  <button id="theme-btn" title="Switch light / dark">Theme</button>
+</header>
+
+<!-- hero + live rates -->
+<section class="card" aria-labelledby="hero-label" style="margin-bottom:14px">
+  <div class="label" id="hero-label">Drawing now (at the wall)</div>
+  <div class="hero">
+    <div>
+      <div class="hero-num"><span id="hero-w">-</span><span class="u">W</span></div>
+      <div class="rate-row">
+        <div>
+          <span class="label">Cost rate</span>
+          <span class="rate-big" id="rate-now">-</span>
+        </div>
+        <div>
+          <span class="label">If it ran all month</span>
+          <span class="rate-big" id="rate-month">-</span>
+        </div>
+        <div>
+          <span class="label">State</span>
+          <span class="rate-big" id="state">-</span>
+        </div>
+      </div>
+      <div class="hero-sub" id="hero-sub">-</div>
+    </div>
+    <div>
+      <svg class="hero-spark" id="spark" viewBox="0 0 600 68" preserveAspectRatio="none"
+           role="img" aria-label="Total power over the last few minutes"></svg>
+      <div class="meter-sub" id="spark-note">last 3 minutes</div>
+    </div>
+  </div>
+</section>
+
+<!-- meters -->
+<div class="grid meters" style="margin-bottom:14px" id="meters"></div>
+
+<!-- period totals -->
+<div class="grid tiles" id="tiles"></div>
+
+<!-- history -->
+<div class="filters" role="group" aria-label="Time range for the history charts below">
+  <span class="label">History</span>
+  <button data-range="24h" aria-pressed="true">Last 24 hours</button>
+  <button data-range="7d" aria-pressed="false">7 days</button>
+  <button data-range="30d" aria-pressed="false">30 days</button>
+  <span class="spacer"></span>
+  <span class="chart-note" id="hist-note"></span>
+</div>
+
+<section class="card chart-card" aria-labelledby="t1">
+  <div class="chart-head">
+    <span class="chart-title" id="t1">Power draw</span>
+    <span class="chart-note" id="n1">watts at the wall, stacked by component</span>
+    <span class="spacer"></span>
+    <button class="tbl-btn" data-target="tbl1" aria-pressed="false">Table</button>
+  </div>
+  <div class="legend" id="leg1">
+    <span><span class="key" style="background:var(--series-gpu)"></span>GPU</span>
+    <span><span class="key" style="background:var(--series-cpu)"></span>CPU</span>
+    <span><span class="key" style="background:var(--series-other)"></span>Board, RAM, drives + PSU loss</span>
+  </div>
+  <div class="plot-wrap">
+    <svg class="plot" id="plot1" viewBox="0 0 1000 300" tabindex="0" role="img"
+         aria-label="Stacked power draw over time by component"></svg>
+    <div class="tooltip" id="tt1"></div>
+  </div>
+  <div class="table-scroll hidden" id="tbl1"></div>
+</section>
+
+<section class="card chart-card" aria-labelledby="t2">
+  <div class="chart-head">
+    <span class="chart-title" id="t2">Energy and cost</span>
+    <span class="chart-note" id="n2"></span>
+    <span class="spacer"></span>
+    <button class="tbl-btn" data-target="tbl2" aria-pressed="false">Table</button>
+  </div>
+  <div class="plot-wrap">
+    <svg class="plot" id="plot2" viewBox="0 0 1000 220" tabindex="0" role="img"
+         aria-label="Energy consumed per period"></svg>
+    <div class="tooltip" id="tt2"></div>
+  </div>
+  <div class="table-scroll hidden" id="tbl2"></div>
+</section>
+
+<section class="card chart-card" aria-labelledby="t3" id="temp-card">
+  <div class="chart-head">
+    <span class="chart-title" id="t3">Temperatures</span>
+    <span class="chart-note" id="n3">degrees Celsius</span>
+    <span class="spacer"></span>
+    <button class="tbl-btn" data-target="tbl3" aria-pressed="false">Table</button>
+  </div>
+  <div class="legend">
+    <span><span class="key line" style="background:var(--series-gpu)"></span>GPU</span>
+    <span><span class="key line" style="background:var(--series-cpu)"></span>CPU</span>
+  </div>
+  <div class="plot-wrap">
+    <svg class="plot" id="plot3" viewBox="0 0 1000 200" tabindex="0" role="img"
+         aria-label="GPU and CPU temperature over time"></svg>
+    <div class="tooltip" id="tt3"></div>
+  </div>
+  <div class="table-scroll hidden" id="tbl3"></div>
+</section>
+
+<section class="card" style="margin-top:14px" aria-labelledby="t4">
+  <div class="chart-head"><span class="chart-title" id="t4">On the GPU right now</span></div>
+  <div id="procs" class="meter-sub">-</div>
+</section>
+
+<footer>
+  <span id="model-note"></span>
+</footer>
+
+</div>
+<script>
+"use strict";
+const SVG = "http://www.w3.org/2000/svg";
+const $ = (id) => document.getElementById(id);
+
+/* ---------------------------------------------------------------- formatting */
+const fmt = {
+  w: (v) => v == null ? "-" : Math.round(v).toLocaleString(),
+  n1: (v) => v == null ? "-" : v.toFixed(1),
+  kwh: (v) => v == null ? "-" : (v >= 100 ? v.toFixed(0) : v.toFixed(2)),
+  money: (v) => v == null ? "-" : (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(2)),
+  money3: (v) => v == null ? "-" : v.toFixed(3),
+  clock: (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+  day: (ts) => new Date(ts * 1000).toLocaleDateString([], { day: "numeric", month: "short" }),
+  dayTime: (ts) => new Date(ts * 1000).toLocaleString([],
+      { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }),
+  dur: (s) => {
+    if (s == null) return "-";
+    const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    return d ? `${d}d ${h}h` : (h ? `${h}h ${m}m` : `${m}m`);
+  },
+};
+let SYM = "€";
+
+/* ---------------------------------------------------------------- svg helpers */
+function el(tag, attrs, parent) {
+  const node = document.createElementNS(SVG, tag);
+  for (const k in attrs) node.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(node);
+  return node;
+}
+function text(parent, x, y, str, cls) {
+  const t = el("text", { x, y, class: cls || "tick" }, parent);
+  t.textContent = str;
+  return t;
+}
+function niceTicks(max, count) {
+  if (!(max > 0)) return [0, 1];
+  const raw = max / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || 10 * mag;
+  const top = Math.ceil(max / step) * step;   // must cover max, never clip it
+  const out = [];
+  for (let v = 0; v <= top + step * 1e-6; v += step) out.push(+v.toFixed(6));
+  return out;
+}
+
+/* ---------------------------------------------------------------- state */
+let RANGE = "24h";
+let SERIES = null;      // history payload
+let NOW = null;         // /api/now payload
+
+/* ---------------------------------------------------------------- live section */
+function meter(label, value, unitTxt, pct, sub) {
+  const cls = pct >= 90 ? "crit" : pct >= 75 ? "warn" : "";
+  const div = document.createElement("div");
+  div.className = "card";
+  const head = document.createElement("div");
+  head.className = "meter-head";
+  const l = document.createElement("span"); l.className = "label"; l.textContent = label;
+  const v = document.createElement("span"); v.className = "meter-val";
+  v.textContent = value + (unitTxt ? " " + unitTxt : "");
+  head.append(l, v);
+  const track = document.createElement("div"); track.className = "track";
+  const fill = document.createElement("div");
+  fill.className = "fill " + cls;
+  fill.style.width = Math.max(0, Math.min(100, pct || 0)) + "%";
+  track.appendChild(fill);
+  const s = document.createElement("div"); s.className = "meter-sub"; s.textContent = sub;
+  div.append(head, track, s);
+  return div;
+}
+
+function tile(label, value, unit, sub) {
+  const div = document.createElement("div");
+  div.className = "card";
+  const l = document.createElement("div"); l.className = "label"; l.textContent = label;
+  const v = document.createElement("div"); v.className = "tile-val";
+  v.textContent = value;
+  if (unit) { const u = document.createElement("span"); u.className = "u"; u.textContent = unit; v.appendChild(u); }
+  const s = document.createElement("div"); s.className = "tile-sub"; s.textContent = sub;
+  div.append(l, v, s);
+  return div;
+}
+
+function drawSpark(svg, values, colorVar) {
+  svg.textContent = "";
+  const pts = values.filter((v) => v != null);
+  if (pts.length < 2) return;
+  const W = 600, H = 68, pad = 4;
+  const max = Math.max(...pts) * 1.12 || 1;
+  const min = Math.min(0, Math.min(...pts));
+  const x = (i) => pad + i * (W - pad * 2) / (values.length - 1);
+  const y = (v) => H - pad - (v - min) / (max - min) * (H - pad * 2);
+  let d = "", area = "";
+  values.forEach((v, i) => {
+    if (v == null) return;
+    d += (d ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1);
+  });
+  area = d + `L${x(values.length - 1).toFixed(1)} ${H - pad}L${x(0).toFixed(1)} ${H - pad}Z`;
+  el("path", { d: area, fill: `var(${colorVar})`, "fill-opacity": .12 }, svg);
+  el("path", { d, class: "edge", stroke: `var(${colorVar})` }, svg);
+  const last = values.length - 1;
+  if (values[last] != null) {
+    el("circle", { cx: x(last), cy: y(values[last]), r: 4,
+                   fill: `var(${colorVar})`, class: "cdot" }, svg);
+  }
+}
+
+function renderLive(d) {
+  NOW = d;
+  SYM = d.meta.symbol || "€";
+  $("host").textContent = d.meta.host + " · up " + fmt.dur(d.meta.uptime_s);
+  $("cpu-src").textContent = d.power.source === "rapl"
+    ? "CPU power: measured (RAPL)" : "CPU power: estimated from load";
+  $("tariff-pill").textContent = d.meta.mode === "none"
+    ? "no tariff set" : `${SYM}${d.meta.rate} / kWh`;
+
+  $("hero-w").textContent = fmt.w(d.power.total_w);
+  $("rate-now").textContent = SYM + fmt.money3(d.power.cost_per_h) + "/h";
+  $("rate-month").textContent = SYM + fmt.money(d.power.cost_per_h * 24 * 30);
+  $("state").textContent = d.busy ? "training" : "idle";
+  $("hero-sub").textContent =
+    `GPU ${fmt.w(d.power.gpu_w)} W · CPU ${fmt.w(d.power.cpu_w)} W · `
+    + `rest ${fmt.w(d.power.other_w)} W · updated ${fmt.clock(d.ts)}`;
+
+  drawSpark($("spark"), d.spark.total, "--series-gpu");
+  $("spark-note").textContent =
+    `total draw, last ${Math.round(d.spark.total.length * d.meta.interval / 60)} min`;
+
+  /* meters -- a ratio against a limit each */
+  const m = $("meters");
+  m.textContent = "";
+  const g = d.gpu;
+  if (g.present) {
+    m.appendChild(meter("GPU power", fmt.w(d.power.gpu_w), "W",
+      100 * d.power.gpu_w / (g.limit_w || 350),
+      `limit ${fmt.w(g.limit_w)} W · ${g.name || "GPU"}`));
+    m.appendChild(meter("GPU load", fmt.w(g.util), "%", g.util || 0,
+      `${fmt.w(g.temp)} °C · fan ${fmt.w(g.fan)}% · ${fmt.w(g.clock_mhz)} MHz`));
+    m.appendChild(meter("GPU memory", fmt.n1((g.mem_used || 0) / 1024), "GiB",
+      100 * (g.mem_used || 0) / (g.mem_total || 1),
+      `of ${fmt.n1((g.mem_total || 0) / 1024)} GiB`));
+  }
+  m.appendChild(meter("CPU power", fmt.w(d.power.cpu_w), "W",
+    100 * d.power.cpu_w / (d.cpu.max_w || 142),
+    `${fmt.n1(d.cpu.pct)}% busy · ${d.cpu.temp == null ? "-" : fmt.n1(d.cpu.temp) + " °C"}`
+    + ` · load ${d.cpu.load ? d.cpu.load[0].toFixed(2) : "-"}`));
+  m.appendChild(meter("Memory", fmt.n1(d.mem.used_gib), "GiB", d.mem.pct,
+    `of ${fmt.n1(d.mem.total_gib)} GiB`));
+  m.appendChild(meter("Disk (home)", fmt.n1(d.disk.used_gib), "GiB", d.disk.pct,
+    `of ${fmt.n1(d.disk.total_gib)} GiB · net `
+    + `${fmt.n1(d.net.rx_mbps)}/${fmt.n1(d.net.tx_mbps)} Mb/s`));
+
+  /* period tiles */
+  const t = $("tiles");
+  t.textContent = "";
+  const T = d.totals;
+  t.appendChild(tile("Today", SYM + fmt.money(T.today.cost), "",
+    `${fmt.kwh(T.today.kwh)} kWh · peak ${fmt.w(T.today.peak_w)} W`));
+  t.appendChild(tile("Month to date", SYM + fmt.money(T.month.cost), "",
+    `${fmt.kwh(T.month.kwh)} kWh · ${fmt.dur(T.month.hours * 3600)} recorded`));
+  t.appendChild(tile("Projected month", SYM + fmt.money(T.month.projected_30d_cost), "",
+    `30 days at the average draw recorded · ${fmt.kwh(T.month.projected_30d_kwh)} kWh`));
+  const idleShare = T.month.kwh ? 100 * T.month.idle_kwh / T.month.kwh : 0;
+  t.appendChild(tile("Idle share this month", fmt.w(idleShare), "%",
+    `${SYM}${fmt.money(T.month.cost * idleShare / 100)} powered on, not training`));
+  t.appendChild(tile("All time", SYM + fmt.money(T.all.cost), "",
+    `${fmt.kwh(T.all.kwh)} kWh over ${fmt.dur(T.all.hours * 3600)}`));
+
+  /* GPU processes */
+  const p = $("procs");
+  p.textContent = "";
+  if (!g.present) { p.textContent = "No NVIDIA GPU detected."; }
+  else if (!g.procs || !g.procs.length) { p.textContent = "No compute processes."; }
+  else {
+    const tbl = document.createElement("table");
+    tbl.innerHTML = "<thead><tr><th>Process</th><th>PID</th><th>GPU memory</th></tr></thead>";
+    const tb = document.createElement("tbody");
+    g.procs.forEach((pr) => {
+      const tr = document.createElement("tr");
+      [pr.name, pr.pid, fmt.n1((pr.mem_mib || 0) / 1024) + " GiB"].forEach((cell) => {
+        const td = document.createElement("td"); td.textContent = cell; tr.appendChild(td);
+      });
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    p.appendChild(tbl);
+  }
+
+  $("model-note").textContent =
+    `Wall power = (CPU + GPU + ${fmt.w(d.meta.baseline_w)} W baseline) ÷ `
+    + `${d.meta.psu_efficiency} PSU efficiency. GPU watts come from the card's own sensor; `
+    + `CPU watts are ${d.power.source === "rapl" ? "read from the RAPL energy counter" :
+        "estimated from utilisation (see README to enable RAPL)"}; `
+    + `the baseline and PSU efficiency are configured constants, so the total is a close `
+    + `estimate, not a metered reading. Calibrate both in config.toml against a plug meter.`;
+}
+
+/* ---------------------------------------------------------------- chart 1: stacked area */
+const PAD = { l: 52, r: 18, t: 14, b: 26 };
+
+/* Map one SVG unit to one CSS pixel, so axis text keeps its real size on a phone
+   instead of being scaled down with a fixed-width viewBox. Height stays fixed, so
+   the rendered box is exactly H px tall and this can't feed back into layout. */
+function sizeOf(svg, H) {
+  const W = Math.max(300, Math.round(svg.getBoundingClientRect().width || 1000));
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  PAD.l = W < 520 ? 40 : 52;
+  PAD.r = W < 520 ? 12 : 18;
+  return W;
+}
+const xTickTarget = (W) => (W < 420 ? 3 : W < 700 ? 5 : 7);
+
+function xLabel(ts) { return RANGE === "24h" ? fmt.clock(ts) : fmt.day(ts); }
+function whenLabel(ts) { return RANGE === "24h" ? fmt.dayTime(ts) : fmt.dayTime(ts); }
+
+function drawStack(svg, S) {
+  svg.textContent = "";
+  const H = 300, W = sizeOf(svg, H);
+  const n = S.t.length;
+  if (n < 2) { text(svg, W / 2, H / 2, "Collecting data…", "tick").setAttribute("text-anchor", "middle"); return; }
+  const plotW = W - PAD.l - PAD.r, plotH = H - PAD.t - PAD.b;
+  const maxTotal = Math.max(...S.total, 1);
+  const ticks = niceTicks(maxTotal * 1.08, 4);
+  const yMax = ticks[ticks.length - 1];
+  const X = (i) => PAD.l + (n === 1 ? plotW / 2 : i * plotW / (n - 1));
+  const Y = (v) => PAD.t + plotH - (v / yMax) * plotH;
+
+  ticks.forEach((v) => {
+    el("line", { x1: PAD.l, x2: W - PAD.r, y1: Y(v), y2: Y(v),
+                 class: v === 0 ? "axisline" : "gridline" }, svg);
+    text(svg, PAD.l - 8, Y(v) + 4, v.toLocaleString(), "tick y");
+  });
+  text(svg, PAD.l - 8, PAD.t - 2, "W", "tick y");
+
+  // stacked bands, bottom-up: GPU, CPU, other. 2px surface gap between fills.
+  const stack = [
+    { key: "gpu", cls: "gpu", name: "GPU" },
+    { key: "cpu", cls: "cpu", name: "CPU" },
+    { key: "other", cls: "other", name: "Rest" },
+  ];
+  let lower = new Array(n).fill(0);
+  stack.forEach((s) => {
+    const upper = lower.map((v, i) => v + (S[s.key][i] || 0));
+    let top = "", bottom = "";
+    for (let i = 0; i < n; i++) {
+      const yUp = Y(upper[i]), yLow = Y(lower[i]);
+      const gap = yLow - yUp > 4 ? 1 : 0;   // inset only when the band is thick enough
+      top += (i ? "L" : "M") + X(i).toFixed(1) + " " + (yUp + gap).toFixed(1);
+    }
+    for (let i = n - 1; i >= 0; i--) {
+      const yUp = Y(upper[i]), yLow = Y(lower[i]);
+      const gap = yLow - yUp > 4 ? 1 : 0;
+      bottom += "L" + X(i).toFixed(1) + " " + (yLow - gap).toFixed(1);
+    }
+    el("path", { d: top + bottom + "Z", class: "band-" + s.cls, "fill-opacity": .17 }, svg);
+    el("path", { d: top, class: "edge edge-" + s.cls }, svg);
+    lower = upper;
+  });
+
+  // x ticks
+  const step = Math.max(1, Math.round(n / xTickTarget(W)));
+  for (let i = 0; i < n; i += step) {
+    const t = text(svg, X(i), H - 8, xLabel(S.t[i]), "tick");
+    t.setAttribute("text-anchor", i === 0 ? "start" : "middle");
+  }
+  // direct label on the peak, selectively
+  const peakIdx = S.total.indexOf(Math.max(...S.total));
+  const lab = text(svg, X(peakIdx), Math.max(PAD.t + 10, Y(S.total[peakIdx]) - 8),
+                   fmt.w(S.total[peakIdx]) + " W peak", "dlabel");
+  lab.setAttribute("text-anchor", peakIdx > n * 0.8 ? "end" : peakIdx < n * 0.2 ? "start" : "middle");
+
+  return { X, Y, n, stack };
+}
+
+function drawBars(svg, S) {
+  svg.textContent = "";
+  const H = 220, W = sizeOf(svg, H);
+  const perDay = RANGE !== "24h";
+  // aggregate: 24h -> per hour; longer -> per day
+  const groups = new Map();
+  for (let i = 0; i < S.t.length; i++) {
+    const ts = S.t[i];
+    const key = perDay
+      ? new Date(ts * 1000).setHours(0, 0, 0, 0) / 1000
+      : Math.floor(ts / 3600) * 3600;
+    const g = groups.get(key) || { kwh: 0, cost: 0 };
+    g.kwh += S.kwh[i] || 0;
+    g.cost += S.cost ? (S.cost[i] || 0) : (S.kwh[i] || 0) * (NOW ? NOW.meta.rate : 0);
+    groups.set(key, g);
+  }
+  const keys = [...groups.keys()].sort((a, b) => a - b);
+  if (!keys.length) { text(svg, W / 2, H / 2, "Collecting data…").setAttribute("text-anchor", "middle"); return null; }
+  const plotW = W - PAD.l - PAD.r, plotH = H - PAD.t - PAD.b;
+  const maxKwh = Math.max(...keys.map((k) => groups.get(k).kwh), 0.001);
+  const ticks = niceTicks(maxKwh * 1.1, 3);
+  const yMax = ticks[ticks.length - 1];
+  const band = plotW / keys.length;
+  const barW = Math.min(24, Math.max(2, band - 4));
+  const Y = (v) => PAD.t + plotH - (v / yMax) * plotH;
+  const X = (i) => PAD.l + band * i + band / 2;
+
+  ticks.forEach((v) => {
+    el("line", { x1: PAD.l, x2: W - PAD.r, y1: Y(v), y2: Y(v),
+                 class: v === 0 ? "axisline" : "gridline" }, svg);
+    text(svg, PAD.l - 8, Y(v) + 4, v.toFixed(v < 1 ? 2 : 1), "tick y");
+  });
+  text(svg, PAD.l - 8, PAD.t - 2, "kWh", "tick y");
+
+  // 4px rounded data-end, square at the baseline
+  keys.forEach((k, i) => {
+    const g = groups.get(k);
+    const y = Y(g.kwh), base = Y(0);
+    const h = Math.max(1, base - y);
+    const r = Math.min(4, barW / 2, h);
+    const x0 = X(i) - barW / 2, x1 = X(i) + barW / 2;
+    el("path", { class: "bar", d: `M${x0} ${base}L${x0} ${y + r}Q${x0} ${y} ${x0 + r} ${y}`
+      + `L${x1 - r} ${y}Q${x1} ${y} ${x1} ${y + r}L${x1} ${base}Z` }, svg);
+  });
+  const step = Math.max(1, Math.round(keys.length / (xTickTarget(W) + 1)));
+  keys.forEach((k, i) => {
+    if (i % step) return;
+    const t = text(svg, X(i), H - 8, perDay ? fmt.day(k) : fmt.clock(k), "tick");
+    t.setAttribute("text-anchor", "middle");
+  });
+  return { X, Y, keys, groups, band, perDay };
+}
+
+function drawLines(svg, S) {
+  svg.textContent = "";
+  const H = 200, W = sizeOf(svg, H);
+  const have = S.gpu_temp.some((v) => v != null) || S.cpu_temp.some((v) => v != null);
+  if (!have) {
+    const t = text(svg, W / 2, H / 2,
+      "Temperature history is kept for 24 hours only", "tick");
+    t.setAttribute("text-anchor", "middle");
+    return null;
+  }
+  const plotW = W - PAD.l - PAD.r, plotH = H - PAD.t - PAD.b;
+  const all = [...S.gpu_temp, ...S.cpu_temp].filter((v) => v != null);
+  const ticks = niceTicks(Math.max(...all) * 1.1, 4);
+  const yMax = ticks[ticks.length - 1];
+  const n = S.t.length;
+  const X = (i) => PAD.l + (n === 1 ? plotW / 2 : i * plotW / (n - 1));
+  const Y = (v) => PAD.t + plotH - (v / yMax) * plotH;
+  ticks.forEach((v) => {
+    el("line", { x1: PAD.l, x2: W - PAD.r, y1: Y(v), y2: Y(v),
+                 class: v === 0 ? "axisline" : "gridline" }, svg);
+    text(svg, PAD.l - 8, Y(v) + 4, v.toFixed(0), "tick y");
+  });
+  text(svg, PAD.l - 8, PAD.t - 2, "°C", "tick y");
+  [["gpu_temp", "gpu"], ["cpu_temp", "cpu"]].forEach(([key, cls]) => {
+    let d = "", open = false;
+    S[key].forEach((v, i) => {
+      if (v == null) { open = false; return; }
+      d += (open ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1);
+      open = true;
+    });
+    if (d) el("path", { d, class: "edge edge-" + cls }, svg);
+  });
+  // end labels, one per series
+  [["gpu_temp", "GPU"], ["cpu_temp", "CPU"]].forEach(([key, name]) => {
+    for (let i = S[key].length - 1; i >= 0; i--) {
+      if (S[key][i] != null) {
+        const t = text(svg, X(i) - 6, Y(S[key][i]) - 7, `${name} ${Math.round(S[key][i])}°`, "dlabel");
+        t.setAttribute("text-anchor", "end");
+        break;
+      }
+    }
+  });
+  return { X, Y, n };
+}
+
+/* ---------------------------------------------------------------- hover layers */
+function attachCrosshair(svg, geom, S, tt, rows) {
+  if (!geom) return;
+  const W = svg.viewBox.baseVal.width;
+  const layer = el("g", {}, svg);
+  const line = el("line", { class: "crosshair", y1: PAD.t, y2: svg.viewBox.baseVal.height - PAD.b,
+                            x1: -99, x2: -99 }, layer);
+  const dots = rows.map(() => el("circle", { r: 4, class: "cdot", cx: -99, cy: -99,
+                                             "fill-opacity": 0 }, layer));
+  const hit = el("rect", { x: PAD.l, y: PAD.t, width: W - PAD.l - PAD.r,
+                           height: svg.viewBox.baseVal.height - PAD.t - PAD.b,
+                           fill: "transparent" }, svg);
+  let idx = -1;
+  const show = (i, clientX) => {
+    if (i < 0 || i >= geom.n) return;
+    idx = i;
+    const x = geom.X(i);
+    line.setAttribute("x1", x); line.setAttribute("x2", x);
+    tt.textContent = "";
+    const when = document.createElement("div");
+    when.className = "tt-when";
+    when.textContent = whenLabel(S.t[i]);
+    tt.appendChild(when);
+    rows.forEach((r, k) => {
+      const v = r.values[i];
+      const row = document.createElement("div");
+      row.className = "tt-row" + (r.total ? " total" : "");
+      const key = document.createElement("span");
+      key.className = "k";
+      key.style.background = r.color ? `var(${r.color})` : "transparent";
+      const val = document.createElement("span"); val.className = "v";
+      val.textContent = v == null ? "-" : r.fmt(v);
+      const nm = document.createElement("span"); nm.className = "n";
+      nm.textContent = r.name;
+      row.append(key, val, nm);
+      tt.appendChild(row);
+      if (r.stackTop && v != null) {
+        dots[k].setAttribute("cx", x);
+        dots[k].setAttribute("cy", geom.Y(r.stackTop[i]));
+        dots[k].setAttribute("fill", `var(${r.color})`);
+        dots[k].setAttribute("fill-opacity", 1);
+      } else {
+        dots[k].setAttribute("fill-opacity", 0);
+      }
+    });
+    tt.classList.add("show");
+    const box = svg.getBoundingClientRect();
+    const px = box.left + (x / W) * box.width;
+    const wrapBox = tt.parentElement.getBoundingClientRect();
+    let left = px - wrapBox.left + 14;
+    if (left + tt.offsetWidth > wrapBox.width) left = px - wrapBox.left - tt.offsetWidth - 14;
+    tt.style.left = Math.max(0, left) + "px";
+    tt.style.top = "8px";
+  };
+  const fromEvent = (ev) => {
+    const box = svg.getBoundingClientRect();
+    const vx = (ev.clientX - box.left) / box.width * W;
+    const i = Math.round((vx - PAD.l) / ((W - PAD.l - PAD.r) / Math.max(1, geom.n - 1)));
+    show(Math.max(0, Math.min(geom.n - 1, i)), ev.clientX);
+  };
+  hit.addEventListener("pointermove", fromEvent);
+  hit.addEventListener("pointerdown", fromEvent);
+  const hide = () => {
+    tt.classList.remove("show");
+    line.setAttribute("x1", -99); line.setAttribute("x2", -99);
+    dots.forEach((d) => d.setAttribute("fill-opacity", 0));
+  };
+  hit.addEventListener("pointerleave", hide);
+  svg.addEventListener("blur", hide);
+  svg.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowRight") { show(idx < 0 ? 0 : Math.min(geom.n - 1, idx + 1)); ev.preventDefault(); }
+    else if (ev.key === "ArrowLeft") { show(idx < 0 ? geom.n - 1 : Math.max(0, idx - 1)); ev.preventDefault(); }
+    else if (ev.key === "Escape") hide();
+  });
+  svg.addEventListener("focus", () => { if (idx < 0) show(geom.n - 1); });
+}
+
+function attachBarHover(svg, geom, tt) {
+  if (!geom) return;
+  const H = svg.viewBox.baseVal.height, W = svg.viewBox.baseVal.width;
+  geom.keys.forEach((k, i) => {
+    const g = geom.groups.get(k);
+    const hit = el("rect", { x: geom.X(i) - geom.band / 2, y: PAD.t, width: geom.band,
+                             height: H - PAD.t - PAD.b, fill: "transparent" }, svg);
+    const paint = () => {
+      tt.textContent = "";
+      const when = document.createElement("div");
+      when.className = "tt-when";
+      when.textContent = geom.perDay
+        ? new Date(k * 1000).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })
+        : fmt.dayTime(k);
+      tt.appendChild(when);
+      [[fmt.kwh(g.kwh) + " kWh", "energy"], [SYM + fmt.money(g.cost), "cost"]].forEach(([v, n]) => {
+        const row = document.createElement("div"); row.className = "tt-row";
+        const key = document.createElement("span"); key.className = "k";
+        key.style.background = "var(--series-gpu)";
+        const val = document.createElement("span"); val.className = "v"; val.textContent = v;
+        const nm = document.createElement("span"); nm.className = "n"; nm.textContent = n;
+        row.append(key, val, nm); tt.appendChild(row);
+      });
+      tt.classList.add("show");
+      const box = svg.getBoundingClientRect();
+      const px = box.left + (geom.X(i) / W) * box.width;
+      const wrapBox = tt.parentElement.getBoundingClientRect();
+      let left = px - wrapBox.left + 14;
+      if (left + tt.offsetWidth > wrapBox.width) left = px - wrapBox.left - tt.offsetWidth - 14;
+      tt.style.left = Math.max(0, left) + "px";
+      tt.style.top = "8px";
+    };
+    hit.addEventListener("pointerenter", paint);
+    hit.addEventListener("pointermove", paint);
+    hit.addEventListener("pointerleave", () => tt.classList.remove("show"));
+  });
+}
+
+/* ---------------------------------------------------------------- table twins */
+function buildTable(target, head, rows) {
+  const box = $(target);
+  box.textContent = "";
+  const tbl = document.createElement("table");
+  const thead = document.createElement("thead");
+  const htr = document.createElement("tr");
+  head.forEach((h) => { const th = document.createElement("th"); th.textContent = h; htr.appendChild(th); });
+  thead.appendChild(htr);
+  const tb = document.createElement("tbody");
+  rows.forEach((r) => {
+    const tr = document.createElement("tr");
+    r.forEach((c) => { const td = document.createElement("td"); td.textContent = c; tr.appendChild(td); });
+    tb.appendChild(tr);
+  });
+  tbl.append(thead, tb);
+  box.appendChild(tbl);
+}
+
+/* ---------------------------------------------------------------- render history */
+function renderHistory(S) {
+  SERIES = S;
+  const g1 = drawStack($("plot1"), S);
+  attachCrosshair($("plot1"), g1, S, $("tt1"), [
+    { name: "GPU", color: "--series-gpu", values: S.gpu, fmt: (v) => fmt.w(v) + " W",
+      stackTop: S.gpu },
+    { name: "CPU", color: "--series-cpu", values: S.cpu, fmt: (v) => fmt.w(v) + " W",
+      stackTop: S.gpu.map((v, i) => v + S.cpu[i]) },
+    { name: "Rest", color: "--series-other", values: S.other, fmt: (v) => fmt.w(v) + " W",
+      stackTop: S.total },
+    { name: "total at the wall", color: null, values: S.total, fmt: (v) => fmt.w(v) + " W", total: true },
+  ]);
+  const g2 = drawBars($("plot2"), S);
+  attachBarHover($("plot2"), g2, $("tt2"));
+  const g3 = drawLines($("plot3"), S);
+  attachCrosshair($("plot3"), g3, S, $("tt3"), [
+    { name: "GPU", color: "--series-gpu", values: S.gpu_temp, fmt: (v) => fmt.n1(v) + " °C" },
+    { name: "CPU", color: "--series-cpu", values: S.cpu_temp, fmt: (v) => fmt.n1(v) + " °C" },
+  ]);
+
+  $("n2").textContent = RANGE === "24h" ? "kWh per hour" : "kWh per day";
+  $("hist-note").textContent = RANGE === "24h"
+    ? "5-minute averages"
+    : "hourly totals · temperatures only kept for 24 h";
+
+  buildTable("tbl1", ["Time", "GPU W", "CPU W", "Rest W", "Total W"],
+    S.t.map((ts, i) => [whenLabel(ts), fmt.w(S.gpu[i]), fmt.w(S.cpu[i]),
+                        fmt.w(S.other[i]), fmt.w(S.total[i])]).reverse());
+  if (g2) {
+    buildTable("tbl2", [RANGE === "24h" ? "Hour" : "Day", "kWh", "Cost " + SYM],
+      g2.keys.map((k) => [g2.perDay ? fmt.day(k) : fmt.dayTime(k),
+                          fmt.kwh(g2.groups.get(k).kwh),
+                          fmt.money(g2.groups.get(k).cost)]).reverse());
+  }
+  buildTable("tbl3", ["Time", "GPU °C", "CPU °C"],
+    S.t.map((ts, i) => [whenLabel(ts),
+                        S.gpu_temp[i] == null ? "-" : fmt.n1(S.gpu_temp[i]),
+                        S.cpu_temp[i] == null ? "-" : fmt.n1(S.cpu_temp[i])]).reverse());
+}
+
+/* ---------------------------------------------------------------- fetching */
+let lastOk = 0;
+async function tickNow() {
+  try {
+    const r = await fetch("api/now", { cache: "no-store" });
+    renderLive(await r.json());
+    lastOk = Date.now();
+  } catch (e) { /* keep the last render on screen */ }
+  const stale = Date.now() - lastOk > 12000;
+  $("dot").className = "dot" + (stale ? " stale" : "");
+  $("live-txt").textContent = stale ? "no data" : "live";
+}
+
+async function tickHistory() {
+  const cards = document.querySelectorAll(".plot");
+  cards.forEach((c) => c.classList.add("loading"));
+  try {
+    const r = await fetch("api/history?range=" + RANGE, { cache: "no-store" });
+    renderHistory((await r.json()).series);
+  } catch (e) { /* hold previous render */ }
+  document.querySelectorAll(".plot").forEach((c) => c.classList.remove("loading"));
+}
+
+/* ---------------------------------------------------------------- controls */
+document.querySelectorAll(".filters button[data-range]").forEach((b) => {
+  b.addEventListener("click", () => {
+    RANGE = b.dataset.range;
+    document.querySelectorAll(".filters button[data-range]").forEach((o) =>
+      o.setAttribute("aria-pressed", String(o === b)));
+    tickHistory();
+  });
+});
+document.querySelectorAll(".tbl-btn").forEach((b) => {
+  b.addEventListener("click", () => {
+    const box = $(b.dataset.target);
+    const showing = box.classList.toggle("hidden");
+    b.setAttribute("aria-pressed", String(!showing));
+  });
+});
+$("theme-btn").addEventListener("click", () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme === "dark"
+    || (!root.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+  root.dataset.theme = dark ? "light" : "dark";
+  localStorage.setItem("powermon-theme", root.dataset.theme);
+  if (SERIES) renderHistory(SERIES);
+  if (NOW) drawSpark($("spark"), NOW.spark.total, "--series-gpu");
+});
+const savedTheme = localStorage.getItem("powermon-theme");
+if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+
+/* Charts are sized in real pixels, so a width change (rotate a phone, resize a
+   window) needs a redraw rather than a rescale. Debounced; no refetch. */
+let resizeTimer = 0;
+let lastWidth = innerWidth;
+addEventListener("resize", () => {
+  if (innerWidth === lastWidth) return;   // ignore mobile keyboard / toolbar height changes
+  lastWidth = innerWidth;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (SERIES) renderHistory(SERIES);
+    if (NOW) drawSpark($("spark"), NOW.spark.total, "--series-gpu");
+  }, 180);
+});
+
+tickNow();
+tickHistory();
+setInterval(tickNow, 2000);
+setInterval(tickHistory, 60000);
+</script>
+</body>
+</html>

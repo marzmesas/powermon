@@ -1,0 +1,18 @@
+[Unit]
+Description=powermon - power, resource and cost monitor
+Documentation=file:///home/marzmesas/powermon/README.md
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/marzmesas/powermon
+ExecStart=/usr/bin/python3 /home/marzmesas/powermon/powermon.py /home/marzmesas/powermon/config.toml
+Restart=always
+RestartSec=5
+# The sampler must not compete with training jobs.
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=256M
+
+[Install]
+WantedBy=default.target

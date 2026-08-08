@@ -186,6 +186,14 @@ def kwh():
         return json.load(r)["totals"]["all"]["kwh"]
 ```
 
+## Clients
+
+- **Web dashboard** — served by the daemon itself, the full view including history.
+- **`pwr`** — terminal readout on the server.
+- **macOS menu bar app** — designed but not built:
+  [`docs/macos-menubar-app.md`](docs/macos-menubar-app.md) is a build-ready spec
+  with the verified API contract, UX, states and milestones.
+
 ## Storage
 
 Two tables in `powermon.db`:

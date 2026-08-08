@@ -224,15 +224,26 @@ class GpuReader:
         self.name = None
         self.power_limit = 350.0
         self.fail_count = 0
+        self._identify_countdown = 0
         if self.enabled:
-            info = self._run(["--query-gpu=name,enforced.power.limit", "--format=csv,noheader,nounits"])
-            if info:
-                parts = info[0].split(", ")
-                self.name = parts[0]
-                try:
-                    self.power_limit = float(parts[1])
-                except (IndexError, ValueError):
-                    pass
+            self._identify()
+
+    def _identify(self) -> bool:
+        """Read the card's name and power limit. Retried until it succeeds: with
+        lingering enabled the service starts at boot, which can be before the
+        NVIDIA driver is ready -- a one-shot query there would leave the name
+        blank and the power limit stuck on the fallback for the whole uptime."""
+        info = self._run(["--query-gpu=name,enforced.power.limit",
+                          "--format=csv,noheader,nounits"])
+        if not info:
+            return False
+        parts = info[0].split(", ")
+        self.name = parts[0]
+        try:
+            self.power_limit = float(parts[1])
+        except (IndexError, ValueError):
+            pass
+        return True
 
     @staticmethod
     def _run(args: list[str]) -> list[str] | None:
@@ -252,6 +263,13 @@ class GpuReader:
             self.fail_count += 1
             return {"present": True, "error": True}
         self.fail_count = 0
+        # The driver is clearly up now; fill in identity if the boot-time query lost
+        # the race. Throttled so a card that genuinely reports no name costs nothing.
+        if self.name is None:
+            if self._identify_countdown <= 0:
+                self._identify_countdown = 0 if self._identify() else 30
+            else:
+                self._identify_countdown -= 1
         vals: list[float | None] = []
         for item in rows[0].split(", "):
             try:

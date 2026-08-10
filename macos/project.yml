@@ -1,0 +1,63 @@
+name: PowermonMenuBar
+options:
+  bundleIdPrefix: com.marzmesas
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    # No Developer ID on this machine: ad-hoc sign. App Sandbox stays off until
+    # there is a real team — a sandboxed app with no team ID fails Keychain
+    # access with errSecMissingEntitlement (-34018).
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: "YES"
+    CODE_SIGNING_ALLOWED: "YES"
+
+targets:
+  # Target name drives both the product name and the Swift module name; keeping
+  # them equal is what lets the test bundle find its host app.
+  Powermon:
+    type: application
+    platform: macOS
+    sources:
+      - path: PowermonMenuBar
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.marzmesas.powermon
+        ENABLE_HARDENED_RUNTIME: "NO"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    scheme:
+      testTargets:
+        - PowermonTests
+    info:
+      path: PowermonMenuBar/Resources/Info.plist
+      properties:
+        CFBundleName: Powermon
+        CFBundleDisplayName: Powermon
+        LSMinimumSystemVersion: "13.0"
+        # No Dock icon, no main window — menu bar only.
+        LSUIElement: true
+        # The server is plain HTTP and its address is user-supplied: a tailnet
+        # 100.x, a MagicDNS name, a LAN IP or localhost. Those cannot be
+        # enumerated as ATS exception domains ahead of time. See design doc §11.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+
+  PowermonTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: PowermonMenuBarTests
+        excludes: ["Fixtures"]
+      - path: PowermonMenuBarTests/Fixtures
+        buildPhase: resources
+    dependencies:
+      - target: Powermon
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.marzmesas.powermon.tests
+        GENERATE_INFOPLIST_FILE: "YES"

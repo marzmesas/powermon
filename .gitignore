@@ -10,3 +10,11 @@ config.toml
 __pycache__/
 *.pyc
 .DS_Store
+
+# macOS app: project.yml is the source of truth, the .xcodeproj is generated
+# by `xcodegen generate`.
+macos/PowermonMenuBar.xcodeproj/
+macos/PowermonMenuBar/Resources/Info.plist
+macos/build/
+macos/*.xcworkspace/
+xcuserdata/

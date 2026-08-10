@@ -55,7 +55,14 @@ every 2 s, and serves HTTP on port 8787. Repo root has the full README.
 
 ### Reaching it
 
-The server binds `0.0.0.0`. Three routes from a Mac:
+**Prerequisite:** the server ships bound to `127.0.0.1` with an empty
+`server.token`, which routes 1 and 2 below cannot reach. Before this app is
+useful over the network, `config.toml` needs `server.host` widened (`0.0.0.0`, or
+the Tailscale IP to stay off the LAN) **and** a token set. Route 3 works against
+the default config unchanged — worth knowing when a fresh box appears
+unreachable for reasons that have nothing to do with the app.
+
+Three routes from a Mac:
 
 1. **Tailscale (expected)** — `http://<server>:8787`, MagicDNS name or `100.x.y.z`.
    Works from anywhere both devices are on the tailnet. **Token required.**

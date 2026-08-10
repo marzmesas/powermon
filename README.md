@@ -109,7 +109,19 @@ as "training" rather than idle-but-powered-on).
 
 ## Reaching it from your laptop or phone
 
-The service listens on `0.0.0.0`, guarded by `server.token`.
+Out of the box the service listens on `127.0.0.1` only, so nothing off this
+machine can reach it — use the [SSH tunnel](#ssh-tunnel-no-install-nothing-listening-remotely)
+and you are done. To let other devices connect directly, open the bind address
+**and set a token**, in `config.toml`:
+
+```toml
+[server]
+host = "0.0.0.0"   # every interface, including Tailscale
+token = "..."      # python3 -c "import secrets; print(secrets.token_urlsafe(18))"
+```
+
+Then `systemctl --user restart powermon`. Never widen `host` without a token —
+an empty token means loopback-only access is the only thing protecting the port.
 
 **Access rule:** loopback clients (`127.0.0.1`) never need the token, so `pwr` and
 anything else on this box keeps working unconfigured. Every other client must
@@ -135,6 +147,8 @@ and it behaves like an app.
 
 ### SSH tunnel (no install, nothing listening remotely)
 
+Works with the default config — no `server.host` change, no token.
+
 ```sh
 ssh -L 8787:127.0.0.1:8787 <user>@<your-server>
 ```
@@ -142,11 +156,13 @@ ssh -L 8787:127.0.0.1:8787 <user>@<your-server>
 Then open `http://localhost:8787` on the Mac. The tunnel arrives as loopback, so
 **no token is needed** this way.
 
-### Locking it down further
+### Choosing a bind address
 
-`0.0.0.0` also means your LAN can reach the port (token still required). To bind
-only to the tailnet, set `server.host` to your Tailscale IP. To go back to
-loopback-only, set it to `127.0.0.1` and use the SSH tunnel.
+| `server.host` | Who can reach it |
+|---|---|
+| `127.0.0.1` (default) | this machine only — SSH tunnel for anything else |
+| your Tailscale IP | the tailnet only, not the LAN |
+| `0.0.0.0` | tailnet **and** LAN (token still required) |
 
 The token is a shared secret over **plain HTTP** — fine on a tailnet or a trusted
 LAN, not something to expose to the internet. For that, put Caddy in front for
@@ -190,9 +206,10 @@ def kwh():
 
 - **Web dashboard** — served by the daemon itself, the full view including history.
 - **`pwr`** — terminal readout on the server.
-- **macOS menu bar app** — designed but not built:
-  [`docs/macos-menubar-app.md`](docs/macos-menubar-app.md) is a build-ready spec
-  with the verified API contract, UX, states and milestones.
+- **macOS menu bar app** — [`macos/`](macos/README.md). Wall watts in the menu
+  bar, a panel with meters, totals and GPU processes. Needs `server.host` and
+  `server.token` set (above), or an SSH tunnel. Built from the spec in
+  [`docs/macos-menubar-app.md`](docs/macos-menubar-app.md).
 
 ## Storage
 

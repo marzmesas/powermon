@@ -234,6 +234,17 @@ Energy is integrated with the actual gap between samples, and gaps longer than
 `gap_max_s` (60 s) are skipped — so time when the service was down is not
 silently billed as if the machine had been drawing its last known power.
 
+**Editing your tariff does not rewrite history.** Each hour stores the energy
+rate it was billed at, and each day stores the standing charge in effect that
+day, in a third `days` table. Changing `config.toml` changes what you pay from
+then on, not what a closed day already cost. Today, month and all time apply the
+same rule — the charge for every day actually recorded — so "all time" now means
+all electricity, which it previously did not. Days the service was not running
+are not charged, matching `hours` being recorded rather than elapsed time.
+`cost` is split into `energy_cost` and `standing_cost` in the API. Standing
+charges accrue from this version onward; days recorded before it have no stored
+charge and contribute nothing.
+
 **Sensor failures reduce coverage, never consumption.** If a GPU read fails —
 a driver hiccup, a timeout — that interval contributes no energy at all and is
 recorded as missing time in `secs_missing` instead. The sample stores NULL

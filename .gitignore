@@ -2,6 +2,11 @@
 # Start from config.example.toml instead.
 config.toml
 
+# Internal audit and planning notes -- working documents, not part of the
+# shipped project. The design docs that describe what was built do get
+# committed; these describe what might be.
+docs/product-audit-*.md
+
 # Recorded history
 *.db
 *.db-wal

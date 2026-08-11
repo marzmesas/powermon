@@ -122,14 +122,22 @@ host = "0.0.0.0"   # every interface, including Tailscale
 token = "..."      # python3 -c "import secrets; print(secrets.token_urlsafe(18))"
 ```
 
-Then `systemctl --user restart powermon`. Never widen `host` without a token —
-an empty token means loopback-only access is the only thing protecting the port.
+Then `systemctl --user restart powermon`. Widening `host` without setting a
+token is refused at startup: powermon exits before it opens the socket rather
+than serving your data to anyone who can reach the port.
 
 **Access rule:** loopback clients (`127.0.0.1`) never need the token, so `pwr` and
 anything else on this box keeps working unconfigured. Every other client must
 present it, as `?token=…`, an `X-Powermon-Token` header, or the `powermon_token`
 cookie. Open the URL with `?token=…` once and the cookie is set for a year, so
 the token stops showing up in the address bar.
+
+**Behind a reverse proxy:** Caddy, nginx and Traefik connect from this machine,
+so without configuration every request they forward would look like loopback and
+skip the token. Set `server.trusted_proxies` to the proxy's address and its
+`X-Forwarded-For` header is used instead — from anything not listed there, the
+header is ignored, so it cannot be spoofed. `server.require_token_always = true`
+removes the loopback exemption entirely.
 
 ### Tailscale (recommended)
 
@@ -247,4 +255,5 @@ service, and systemd restarts the process if it ever does die.
 | `pwr` | terminal client (symlinked into `~/.local/bin`) |
 | `config.toml` | all settings |
 | `90-rapl-readable.rules` | optional udev rule for measured CPU power |
+| `tests/` | access-control regression tests — `python3 -m unittest discover -s tests`, standard library only |
 | `systemd/powermon.service` | unit, installed to `~/.config/systemd/user/` |

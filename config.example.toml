@@ -7,9 +7,22 @@
 # 0.0.0.0   = every interface, including Tailscale. ONLY do this with a token set.
 host = "127.0.0.1"
 port = 8787
-# Required for any client that is not on this machine. Empty = loopback only.
+# Required for any client that is not on this machine. Empty = loopback only:
+# remote requests are denied, and powermon refuses to start at all if host is
+# set to anything but loopback while this is empty.
 # Generate one with:  python3 -c "import secrets; print(secrets.token_urlsafe(18))"
 token = ""
+
+# Reverse proxies (Caddy, nginx, Traefik) connect from this machine, so every
+# request they forward looks like loopback and would skip the token entirely.
+# List the proxy here and its X-Forwarded-For header is believed instead --
+# which also means the proxy must actually set that header.
+# Addresses or CIDR ranges, comma separated. Empty = trust no proxy.
+trusted_proxies = ""
+
+# Drop the loopback exemption as well, so even `pwr` on this machine must
+# present the token. Off by default.
+require_token_always = false
 
 [sampling]
 interval = 2.0             # seconds between samples

@@ -28,7 +28,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -563,6 +563,13 @@ CREATE TABLE IF NOT EXISTS hourly (
   -- unavailable. secs and secs_missing together are the elapsed time.
   secs_missing REAL NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS days (
+  -- Local midnight, epoch seconds. One row per day we actually recorded on,
+  -- holding the standing charge in effect that day. Written only for the
+  -- current day, so a later tariff change cannot rewrite a closed one.
+  day INTEGER PRIMARY KEY,
+  standing REAL NOT NULL DEFAULT 0
+);
 CREATE INDEX IF NOT EXISTS samples_ts ON samples (ts);
 """
 
@@ -636,12 +643,25 @@ class Store:
                 t0 = seg_end
             self.db.commit()
 
+    def note_day(self, day_start: float, standing: float) -> None:
+        """Record the standing charge in effect for a day being sampled.
+
+        Called only for the current day. Yesterday's row is never revisited, so
+        editing the tariff cannot change what a closed day already cost.
+        """
+        with self.lock:
+            self.db.execute(
+                "INSERT INTO days (day, standing) VALUES (?,?) "
+                "ON CONFLICT(day) DO UPDATE SET standing=excluded.standing",
+                (int(day_start), float(standing)))
+            self.db.commit()
+
     def prune(self, older_than_ts: float) -> None:
         with self.lock:
             self.db.execute("DELETE FROM samples WHERE ts < ?", (older_than_ts,))
             self.db.commit()
 
-    def query(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
+    def query(self, sql: str, args: tuple | dict = ()) -> list[sqlite3.Row]:
         with self.lock:
             return self.db.execute(sql, args).fetchall()
 
@@ -661,6 +681,7 @@ class Monitor:
         self.started = time.time()
         self.session_wh = 0.0
         self._prev_ts: float | None = None
+        self._noted_day: tuple[float, float] | None = None
         self._last_prune = 0.0
         self._stop = threading.Event()
 
@@ -703,6 +724,14 @@ class Monitor:
                "cpu_temp": self.cpu.temp(), "gpu_temp": gpu.get("temp"),
                "busy": int(busy)}
         self.store.add_sample(row)
+
+        # Stamp today with the standing charge now in effect. Once per day, or
+        # again if the tariff is edited while the day is still open.
+        standing = float(self.cfg["tariff"].get("standing_charge_per_day", 0.0) or 0.0)
+        day = _day_start(datetime.fromtimestamp(now))
+        if self._noted_day != (day, standing):
+            self.store.note_day(day, standing)
+            self._noted_day = (day, standing)
 
         # energy integration, skipping service-downtime gaps
         gap_max = float(self.cfg["sampling"]["gap_max_s"])
@@ -775,24 +804,54 @@ def _month_start(dt: datetime) -> float:
     return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 
-def totals(store: Store, cfg: dict) -> dict:
-    now = datetime.now()
-    standing = float(cfg["tariff"].get("standing_charge_per_day", 0.0) or 0.0)
+# Periods are half-open [start, end). Computed by normalising to local midnight
+# rather than adding 86400, so a 23- or 25-hour daylight-saving day still ends
+# where the calendar says it does.
+def _next_day_start(dt: datetime) -> float:
+    return _day_start(dt + timedelta(days=1))
+
+
+def _next_month_start(dt: datetime) -> float:
+    return _month_start(dt.replace(day=1) + timedelta(days=32))
+
+
+def totals(store: Store, cfg: dict, now: datetime | None = None) -> dict:
+    """Period totals.
+
+    Standing charges are read back from the `days` table rather than
+    recomputed from the current configuration, so editing the tariff cannot
+    change what a closed day cost. Every period applies the same rule -- the
+    charge for each day actually recorded -- so "all time" now means all
+    electricity, which it previously did not.
+    """
+    now = now or datetime.now()
     out = {}
-    windows = {"today": (_day_start(now), 1),          # standing charge: 1 day
-               "month": (_month_start(now), now.day),   # ... x days elapsed this month
-               "all": (0.0, None)}                      # ... not applied to all-time
-    for label, (start, days) in windows.items():
+    windows = {"today": (_day_start(now), _next_day_start(now)),
+               "month": (_month_start(now), _next_month_start(now)),
+               "all": (0.0, None)}
+    for label, (start, end) in windows.items():
+        # Half-open, so "today" cannot pick up tomorrow if the clock moves.
+        bound = "" if end is None else " AND hour < :end"
+        args = {"start": int(start), "end": int(end or 0)}
         row = store.query(
             "SELECT COALESCE(SUM(wh),0) wh, COALESCE(SUM(wh_busy),0) busy,"
             " COALESCE(SUM(wh_idle),0) idle, COALESCE(SUM(cost),0) cost,"
             " COALESCE(MAX(max_w),0) peak, COALESCE(SUM(secs),0) secs,"
             " COALESCE(SUM(secs_missing),0) missing"
-            " FROM hourly WHERE hour >= ?", (int(start),))[0]
-        cost = row["cost"] + (standing * days if days else 0.0)
+            " FROM hourly WHERE hour >= :start" + bound, args)[0]
+        charges = store.query(
+            "SELECT COALESCE(SUM(standing),0) standing, COUNT(*) days"
+            " FROM days WHERE day >= :start" + bound.replace("hour", "day"), args)[0]
+        energy_cost = row["cost"]
+        standing_cost = charges["standing"]
         elapsed = row["secs"] + row["missing"]
         out[label] = {"kwh": row["wh"] / 1000.0, "busy_kwh": row["busy"] / 1000.0,
-                      "idle_kwh": row["idle"] / 1000.0, "cost": cost,
+                      "idle_kwh": row["idle"] / 1000.0,
+                      "cost": energy_cost + standing_cost,
+                      # Split out, because they answer different questions:
+                      # one scales with use, the other with calendar days.
+                      "energy_cost": energy_cost, "standing_cost": standing_cost,
+                      "days": charges["days"],
                       "peak_w": row["peak"], "hours": row["secs"] / 3600.0,
                       # What fraction of recorded time actually had every meter.
                       # Below 1.0 the figures above are an undercount, not a fall.
@@ -803,11 +862,14 @@ def totals(store: Store, cfg: dict) -> dict:
     # where recording started on the 28th that would divide by ~28 and read near zero.
     recorded_h = out["month"]["hours"]
     rate = float(cfg["tariff"]["rate"]) if cfg["tariff"]["mode"] != "none" else 0.0
+    # The projection looks forward, so it uses the tariff in effect now rather
+    # than the recorded history.
+    standing_now = float(cfg["tariff"].get("standing_charge_per_day", 0.0) or 0.0)
     if recorded_h > 0.01:
         avg_kw = out["month"]["kwh"] / recorded_h
         projected_kwh = avg_kw * 24.0 * 30.0
         out["month"]["projected_30d_kwh"] = projected_kwh
-        out["month"]["projected_30d_cost"] = projected_kwh * rate + standing * 30.0
+        out["month"]["projected_30d_cost"] = projected_kwh * rate + standing_now * 30.0
     else:
         out["month"]["projected_30d_kwh"] = 0.0
         out["month"]["projected_30d_cost"] = 0.0

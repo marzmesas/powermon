@@ -40,8 +40,8 @@ wall_watts = (cpu_watts + gpu_watts + baseline_watts) / psu_efficiency
 
 | Component | Source | Trust |
 |---|---|---|
-| GPU watts | the card's own sensor, via `nvidia-smi` | **measured**, accurate |
-| CPU watts | RAPL package energy counter, if readable | **measured** (see below) |
+| GPU watts | every card's own sensor, summed, via `nvidia-smi` | **measured**, accurate |
+| CPU watts | RAPL package energy counters, all sockets, if readable | **measured** (see below) |
 | CPU watts | otherwise: utilisation curve `idle_w → max_w` | **estimated**, ±20 W |
 | Baseline | configured constant (board, RAM, NVMe, fans) | assumption |
 | PSU loss | configured efficiency | assumption |
@@ -194,7 +194,7 @@ TLS and real auth.
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/now` | current sample, period totals, 3-minute sparklines, metadata |
+| `GET /api/now` | current sample, period totals, 3-minute sparklines, metadata. `gpu.*` is the host aggregate across every card; `gpu.devices[]` carries each one separately |
 | `GET /api/history?range=24h\|7d\|30d\|90d` | time series (24 h = 5-min averages from raw samples; longer = hourly totals) |
 | `GET /healthz` | `{"ok": true, "last_sample_age_s": …}` |
 

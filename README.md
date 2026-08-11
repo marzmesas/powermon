@@ -234,6 +234,15 @@ Energy is integrated with the actual gap between samples, and gaps longer than
 `gap_max_s` (60 s) are skipped — so time when the service was down is not
 silently billed as if the machine had been drawing its last known power.
 
+**Sensor failures reduce coverage, never consumption.** If a GPU read fails —
+a driver hiccup, a timeout — that interval contributes no energy at all and is
+recorded as missing time in `secs_missing` instead. The sample stores NULL
+rather than 0 W, so history shows a gap instead of a dip, and `/api/now`
+reports `power.partial` for the live reading plus a `coverage` figure on every
+totals period. A silently cheaper month would be worse than a visible hole. A
+machine with no GPU is not a failure: that is a known zero and is billed
+normally.
+
 ## Operating
 
 ```sh

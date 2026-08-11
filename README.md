@@ -8,8 +8,10 @@ and serves a dashboard plus a JSON API on `127.0.0.1:8787`.
 
 - **Dashboard** — <http://localhost:8787>
 - **Terminal** — `pwr` (snapshot) · `pwr -w` (live) · `pwr --json`
-- **Overhead** — 0.2 % of one core, 22 MB RAM. Runs at `Nice=10` with idle I/O
-  priority so it never competes with a training job.
+- **Overhead** — 2.5 % of one core and ~35 MB RAM, measured over 62 h on the
+  reference box at the default 2 s interval. About 80 % of that is forking
+  `nvidia-smi` twice per sample, not Python itself. Runs at `Nice=10` with idle
+  I/O priority so it never competes with a training job.
 
 ## Install
 

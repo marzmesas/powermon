@@ -478,7 +478,10 @@ CREATE TABLE IF NOT EXISTS samples (
 CREATE TABLE IF NOT EXISTS hourly (
   hour INTEGER PRIMARY KEY, wh REAL, wh_busy REAL, wh_idle REAL,
   gpu_wh REAL, cpu_wh REAL, other_wh REAL,
-  cost REAL, rate REAL, secs REAL, max_w REAL
+  cost REAL, rate REAL, secs REAL, max_w REAL,
+  -- Seconds this hour that were NOT integrated because a meter was
+  -- unavailable. secs and secs_missing together are the elapsed time.
+  secs_missing REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS samples_ts ON samples (ts);
 """
@@ -492,12 +495,23 @@ class Store:
         self.db.row_factory = sqlite3.Row
         with self.lock:
             self.db.executescript(SCHEMA)
+            self._migrate()
             self.db.execute("PRAGMA journal_mode=WAL")
             # ~43k commits/day: NORMAL skips an fsync per commit, risking only the
             # last few seconds of samples on a power cut. Right trade for telemetry.
             self.db.execute("PRAGMA synchronous=NORMAL")
             self.db.execute("PRAGMA wal_autocheckpoint=256")
             self.db.commit()
+
+    def _migrate(self) -> None:
+        """Add columns that CREATE TABLE IF NOT EXISTS will not add to an old file."""
+        cols = {row["name"] for row in self.db.execute("PRAGMA table_info(hourly)")}
+        if "secs_missing" not in cols:
+            # Hours recorded before coverage tracking are left at 0 missing:
+            # that is what they were already assumed to be, and inventing a
+            # different figure retroactively would be its own falsehood.
+            self.db.execute(
+                "ALTER TABLE hourly ADD COLUMN secs_missing REAL NOT NULL DEFAULT 0")
 
     def add_sample(self, s: dict) -> None:
         with self.lock:
@@ -507,27 +521,38 @@ class Store:
                 ":gpu_util,:gpu_mem_pct,:cpu_temp,:gpu_temp,:busy)", s)
             self.db.commit()
 
-    def add_energy(self, t0: float, t1: float, watts: dict, busy: bool, rate: float) -> None:
-        """Integrate watts over [t0, t1), splitting across hour boundaries."""
+    def add_energy(self, t0: float, t1: float, watts: dict, busy: bool, rate: float,
+                   complete: bool = True) -> None:
+        """Integrate watts over [t0, t1), splitting across hour boundaries.
+
+        An incomplete interval -- one where a meter could not be read -- adds no
+        energy, no cost and no peak, and is recorded as missing time instead.
+        Substituting zero would quietly lower the recorded consumption, and a
+        silently cheaper month is worse than a visible gap.
+        """
         with self.lock:
             while t0 < t1:
                 hour = int(t0 // 3600) * 3600
                 seg_end = min(t1, hour + 3600)
                 dt = seg_end - t0
-                factor = dt / 3600.0
+                factor = dt / 3600.0 if complete else 0.0
                 wh = watts["total"] * factor
                 self.db.execute(
                     "INSERT INTO hourly (hour, wh, wh_busy, wh_idle, gpu_wh, cpu_wh, other_wh,"
-                    " cost, rate, secs, max_w) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                    " cost, rate, secs, max_w, secs_missing) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
                     "ON CONFLICT(hour) DO UPDATE SET "
                     " wh=wh+excluded.wh, wh_busy=wh_busy+excluded.wh_busy,"
                     " wh_idle=wh_idle+excluded.wh_idle, gpu_wh=gpu_wh+excluded.gpu_wh,"
                     " cpu_wh=cpu_wh+excluded.cpu_wh, other_wh=other_wh+excluded.other_wh,"
                     " cost=cost+excluded.cost, rate=excluded.rate, secs=secs+excluded.secs,"
-                    " max_w=MAX(max_w, excluded.max_w)",
+                    " max_w=MAX(max_w, excluded.max_w),"
+                    " secs_missing=secs_missing+excluded.secs_missing",
                     (hour, wh, wh if busy else 0.0, 0.0 if busy else wh,
                      watts["gpu"] * factor, watts["cpu"] * factor, watts["other"] * factor,
-                     wh / 1000.0 * rate, rate, dt, watts["total"]))
+                     wh / 1000.0 * rate, rate,
+                     dt if complete else 0.0,
+                     watts["total"] if complete else 0.0,
+                     0.0 if complete else dt))
                 t0 = seg_end
             self.db.commit()
 
@@ -568,7 +593,12 @@ class Monitor:
         util = self.cpu.util()
         cpu_w = self.cpu.power(util, now)
         gpu = self.gpu.sample()
-        gpu_w = gpu.get("power_w") or 0.0
+        raw_gpu_w = gpu.get("power_w")
+        # A machine with no GPU contributes a known zero. A GPU whose sensor
+        # failed contributes an unknown, which is a different thing, and the
+        # difference is the whole point: `or 0.0` used to erase it.
+        gpu_known = (not gpu.get("present")) or raw_gpu_w is not None
+        gpu_w = float(raw_gpu_w) if raw_gpu_w is not None else 0.0
         eff = max(0.5, min(1.0, float(self.cfg["power"]["psu_efficiency"])))
         dc = cpu_w + gpu_w + float(self.cfg["power"]["baseline_w"])
         total_w = dc / eff
@@ -581,8 +611,14 @@ class Monitor:
         mem_total = gpu.get("mem_total") or 0.0
         gpu_mem_pct = 100.0 * (gpu.get("mem_used") or 0.0) / mem_total if mem_total else 0.0
 
-        row = {"ts": now, "total_w": total_w, "cpu_w": cpu_w, "gpu_w": gpu_w,
-               "other_w": other_w, "cpu_pct": util, "ram_pct": mem["pct"],
+        # The stored record keeps unknowns as NULL, so a failed read shows as a
+        # gap in the history rather than a dip to zero.
+        row = {"ts": now,
+               "total_w": total_w if gpu_known else None,
+               "cpu_w": cpu_w,
+               "gpu_w": gpu_w if gpu_known else None,
+               "other_w": other_w if gpu_known else None,
+               "cpu_pct": util, "ram_pct": mem["pct"],
                "gpu_util": gpu.get("util") or 0.0, "gpu_mem_pct": gpu_mem_pct,
                "cpu_temp": self.cpu.temp(), "gpu_temp": gpu.get("temp"),
                "busy": int(busy)}
@@ -592,19 +628,29 @@ class Monitor:
         gap_max = float(self.cfg["sampling"]["gap_max_s"])
         if self._prev_ts is not None and 0 < now - self._prev_ts <= gap_max:
             watts = {"total": total_w, "cpu": cpu_w, "gpu": gpu_w, "other": other_w}
-            self.store.add_energy(self._prev_ts, now, watts, busy, self.rate)
-            self.session_wh += total_w * (now - self._prev_ts) / 3600.0
+            self.store.add_energy(self._prev_ts, now, watts, busy, self.rate,
+                                  complete=gpu_known)
+            if gpu_known:
+                self.session_wh += total_w * (now - self._prev_ts) / 3600.0
         self._prev_ts = now
 
+        # The live view keeps numbers so the API shape is unchanged; `partial`
+        # and the existing gpu.error flag are how a client knows the total is
+        # missing its GPU term.
         detail = dict(row)
-        detail.update({"gpu": gpu, "mem": mem, "net": self.net.sample(now),
+        detail.update({"total_w": total_w, "gpu_w": gpu_w, "other_w": other_w,
+                       "partial": not gpu_known,
+                       "gpu": gpu, "mem": mem, "net": self.net.sample(now),
                        "load": loadavg(), "cpu_freq": self.cpu.freq_mhz(),
                        "disk": self._disk(), "cpu_power_source": self.cpu.source})
         self.latest = detail
-        self.recent.append({"ts": now, "total_w": total_w, "cpu_w": cpu_w, "gpu_w": gpu_w,
-                            "gpu_temp": gpu.get("temp"), "cpu_temp": row["cpu_temp"],
-                            "cpu_pct": util, "gpu_util": row["gpu_util"]})
-        del self.recent[:-180]
+        if gpu_known:
+            # No fabricated point: the sparkline shows a shorter series rather
+            # than a dip that never happened.
+            self.recent.append({"ts": now, "total_w": total_w, "cpu_w": cpu_w, "gpu_w": gpu_w,
+                                "gpu_temp": gpu.get("temp"), "cpu_temp": row["cpu_temp"],
+                                "cpu_pct": util, "gpu_util": row["gpu_util"]})
+            del self.recent[:-180]
         return detail
 
     @staticmethod
@@ -660,12 +706,18 @@ def totals(store: Store, cfg: dict) -> dict:
         row = store.query(
             "SELECT COALESCE(SUM(wh),0) wh, COALESCE(SUM(wh_busy),0) busy,"
             " COALESCE(SUM(wh_idle),0) idle, COALESCE(SUM(cost),0) cost,"
-            " COALESCE(MAX(max_w),0) peak, COALESCE(SUM(secs),0) secs"
+            " COALESCE(MAX(max_w),0) peak, COALESCE(SUM(secs),0) secs,"
+            " COALESCE(SUM(secs_missing),0) missing"
             " FROM hourly WHERE hour >= ?", (int(start),))[0]
         cost = row["cost"] + (standing * days if days else 0.0)
+        elapsed = row["secs"] + row["missing"]
         out[label] = {"kwh": row["wh"] / 1000.0, "busy_kwh": row["busy"] / 1000.0,
                       "idle_kwh": row["idle"] / 1000.0, "cost": cost,
-                      "peak_w": row["peak"], "hours": row["secs"] / 3600.0}
+                      "peak_w": row["peak"], "hours": row["secs"] / 3600.0,
+                      # What fraction of recorded time actually had every meter.
+                      # Below 1.0 the figures above are an undercount, not a fall.
+                      "hours_missing": row["missing"] / 3600.0,
+                      "coverage": (row["secs"] / elapsed) if elapsed > 0 else 1.0}
     # Projection: the average draw over the time actually recorded, extended to a
     # 30-day month. Deliberately not scaled by elapsed calendar days -- in a month
     # where recording started on the 28th that would divide by ~28 and read near zero.
@@ -765,7 +817,10 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
         "power": {"total_w": latest["total_w"], "cpu_w": latest["cpu_w"],
                   "gpu_w": latest["gpu_w"], "other_w": latest["other_w"],
                   "cost_per_h": latest["total_w"] / 1000.0 * rate,
-                  "source": latest.get("cpu_power_source", "estimated")},
+                  "source": latest.get("cpu_power_source", "estimated"),
+                  # True when a meter failed this sample: the total is missing
+                  # that component and no energy was recorded for the interval.
+                  "partial": bool(latest.get("partial", False))},
         "cpu": {"pct": latest["cpu_pct"], "temp": latest["cpu_temp"],
                 "freq_mhz": latest.get("cpu_freq"), "load": latest.get("load"),
                 "cores": monitor.cpu.ncpu, "max_w": float(cfg["cpu"]["max_w"])},

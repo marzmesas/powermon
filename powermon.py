@@ -17,6 +17,7 @@ Power model
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -34,7 +35,8 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).resolve().parent
 DEFAULTS = {
-    "server": {"host": "127.0.0.1", "port": 8787, "token": ""},
+    "server": {"host": "127.0.0.1", "port": 8787, "token": "",
+               "trusted_proxies": "", "require_token_always": False},
     "sampling": {"interval": 2.0, "raw_retention_days": 7, "gap_max_s": 60.0},
     "tariff": {"currency": "EUR", "symbol": "EUR", "mode": "flat",
                "rate": 0.15, "standing_charge_per_day": 0.0},
@@ -89,6 +91,121 @@ def load_config(path: Path) -> dict:
             if isinstance(values, dict):
                 cfg.setdefault(section, {}).update(values)
     return cfg
+
+
+# --------------------------------------------------------------------------- access control
+#
+# One rule decides access: resolve the *effective* client address first, then
+# judge that. Source address alone is not evidence of locality -- a reverse
+# proxy on this host makes every request look like 127.0.0.1 -- so forwarding
+# headers are believed only from proxies the operator has explicitly trusted.
+
+
+def _ip(addr: str):
+    """Parse an address, unwrapping IPv4-mapped IPv6 so ::ffff:127.0.0.1 is loopback."""
+    try:
+        parsed = ipaddress.ip_address(str(addr).strip())
+    except (ValueError, AttributeError):
+        return None
+    return getattr(parsed, "ipv4_mapped", None) or parsed
+
+
+def is_loopback(addr: str) -> bool:
+    parsed = _ip(addr)
+    return bool(parsed and parsed.is_loopback)
+
+
+def parse_trusted_proxies(value) -> list:
+    """Addresses or CIDR ranges, as a comma-separated string or a list.
+
+    A string rather than a TOML array because the interpreter on the target
+    host predates tomllib, and the fallback parser cannot read arrays.
+    Raises ValueError on anything unparseable: silently dropping an entry
+    here would silently change who is trusted.
+    """
+    if not value:
+        return []
+    items = value if isinstance(value, (list, tuple)) else str(value).split(",")
+    nets = []
+    for item in items:
+        text = str(item).strip()
+        if not text:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(text, strict=False))
+        except ValueError:
+            raise ValueError(f"{text!r} is not an IP address or CIDR range") from None
+    return nets
+
+
+def in_networks(addr: str, nets: list) -> bool:
+    parsed = _ip(addr)
+    if parsed is None:
+        return False
+    for net in nets:
+        try:
+            if parsed in net:
+                return True
+        except TypeError:  # comparing IPv4 against an IPv6 network, and vice versa
+            continue
+    return False
+
+
+def effective_client(peer: str, forwarded_for: str | None, trusted: list) -> str:
+    """The address authorisation should judge.
+
+    When the peer is not a trusted proxy its headers are ignored entirely, so
+    an attacker cannot claim to be loopback. When it is, the client is the
+    right-most address in the chain that is not itself a trusted proxy.
+    Trusting a proxy means trusting it to send X-Forwarded-For.
+    """
+    if not trusted or not in_networks(peer, trusted):
+        return peer
+    chain = [part.strip() for part in (forwarded_for or "").split(",") if part.strip()]
+    for addr in reversed(chain):
+        if not in_networks(addr, trusted):
+            return addr
+    return chain[0] if chain else peer
+
+
+def authorize(*, client: str, token_supplied: str | None, token_configured: str,
+              require_token_always: bool = False) -> bool:
+    """Loopback is exempt so `pwr` and SSH tunnels need no configuration.
+
+    Every other client must present the token. An unset token denies remote
+    access rather than granting it: no credential means no way in, not a way
+    in for everyone.
+    """
+    if is_loopback(client) and not require_token_always:
+        return True
+    if not token_configured or token_supplied is None:
+        return False
+    # Compare as bytes: compare_digest raises TypeError on non-ASCII str, which a
+    # hand-typed token in a URL could easily be.
+    return hmac.compare_digest(token_supplied.encode("utf-8", "replace"),
+                               token_configured.encode("utf-8", "replace"))
+
+
+def validate_server_config(cfg: dict, cfg_path: Path | None = None) -> str | None:
+    """Returns a fatal error message, or None when the configuration is safe."""
+    server = cfg.get("server", {})
+    host = str(server.get("host") or "")
+    token = str(server.get("token") or "")
+    try:
+        parse_trusted_proxies(server.get("trusted_proxies"))
+    except ValueError as exc:
+        return f"server.trusted_proxies: {exc}"
+    if token or is_loopback(host):
+        return None
+    where = f" in {cfg_path}" if cfg_path else ""
+    return (
+        f"refusing to start: server.host is {host!r}, which accepts connections from "
+        f"other machines, but server.token is empty{where}.\n"
+        "  Anyone able to reach the port would have full access to your data.\n"
+        "  Generate a token with:  python3 -c \"import secrets; "
+        "print(secrets.token_urlsafe(18))\"\n"
+        "  Or set host = \"127.0.0.1\" and reach it through an SSH tunnel."
+    )
 
 
 # --------------------------------------------------------------------------- readers
@@ -681,6 +798,7 @@ class Handler(BaseHTTPRequestHandler):
     monitor: Monitor
     store: Store
     cfg: dict
+    trusted_proxies: list = []
 
     def log_message(self, fmt: str, *args) -> None:  # quiet by default
         if os.environ.get("POWERMON_ACCESS_LOG"):
@@ -699,17 +817,15 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     # -- access control -----------------------------------------------------
-    # A token is required only for non-loopback clients, so `pwr` and anything
-    # else on this host keeps working with no configuration. Set
-    # server.token in config.toml before binding to 0.0.0.0.
-    def _local(self) -> bool:
-        return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+    # The policy lives in authorize() and effective_client() above, where it can
+    # be tested without a socket. This end only gathers the inputs.
+    def _client(self) -> str:
+        return effective_client(self.client_address[0],
+                                self.headers.get("X-Forwarded-For"),
+                                self.trusted_proxies)
 
     def _check_token(self, route) -> tuple[bool, bool]:
         """Returns (authorised, token_came_from_query)."""
-        token = str(self.cfg["server"].get("token") or "")
-        if not token or self._local():
-            return True, False
         from_query = False
         supplied = None
         values = parse_qs(route.query).get("token")
@@ -723,12 +839,20 @@ class Handler(BaseHTTPRequestHandler):
                 if key == "powermon_token":
                     supplied = val
                     break
-        if supplied is None:
-            return False, False
-        # Compare as bytes: compare_digest raises TypeError on non-ASCII str, which a
-        # hand-typed token in a URL could easily be.
-        return hmac.compare_digest(supplied.encode("utf-8", "replace"),
-                                   token.encode("utf-8", "replace")), from_query
+
+        client = self._client()
+        allowed = authorize(
+            client=client,
+            token_supplied=supplied,
+            token_configured=str(self.cfg["server"].get("token") or ""),
+            require_token_always=bool(self.cfg["server"].get("require_token_always")),
+        )
+        if not allowed:
+            # The effective address, not just the peer: without it a proxy
+            # misconfiguration is invisible.
+            print(f"powermon: denied {self.command} {self.path} from {client}"
+                  f" (peer {self.client_address[0]})", file=sys.stderr, flush=True)
+        return allowed, from_query
 
     DENIED = (b"<!doctype html><meta charset=utf-8><title>powermon</title>"
               b"<style>body{font:15px/1.5 system-ui;margin:14vh auto;max-width:30em;padding:0 1.2em;"
@@ -793,6 +917,14 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     cfg_path = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "config.toml"
     cfg = load_config(cfg_path)
+
+    # Before anything is opened, sampled or bound.
+    fatal = validate_server_config(cfg, cfg_path)
+    if fatal:
+        print(f"powermon: {fatal}", file=sys.stderr, flush=True)
+        return 2
+    Handler.trusted_proxies = parse_trusted_proxies(cfg["server"].get("trusted_proxies"))
+
     db_path = Path(os.path.expanduser(
         str(cfg["sampling"].get("db") or HERE / "powermon.db")))
     store = Store(db_path)

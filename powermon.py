@@ -218,19 +218,20 @@ class CpuReader:
     fallback is a utilisation curve between idle_w and max_w.
     """
 
-    def __init__(self, cfg: dict):
+    RAPL_ROOT = Path("/sys/class/powercap")
+
+    def __init__(self, cfg: dict, rapl_root: Path | None = None):
         self.cfg = cfg
         self._stat: tuple[int, int] | None = None
-        self._rapl_path: Path | None = None
-        self._rapl_max = 0
-        self._rapl_prev: tuple[float, int] | None = None
+        # One entry per CPU package: {"energy": Path, "max": int, "prev": (ts, uj)}
+        self._rapl: list[dict] = []
         self.source = "estimated"
-        self._find_rapl()
+        self._find_rapl(rapl_root or self.RAPL_ROOT)
         self._temp_path = self._find_cpu_temp()
         self.ncpu = os.cpu_count() or 1
 
-    def _find_rapl(self) -> None:
-        for dom in sorted(Path("/sys/class/powercap").glob("*-rapl:[0-9]")):
+    def _find_rapl(self, root: Path) -> None:
+        for dom in sorted(root.glob("*-rapl:[0-9]")):
             name_file, energy = dom / "name", dom / "energy_uj"
             try:
                 if not name_file.read_text().strip().startswith("package"):
@@ -238,13 +239,20 @@ class CpuReader:
                 energy.read_text()  # permission probe
             except OSError:
                 continue
-            self._rapl_path = energy
             try:
-                self._rapl_max = int((dom / "max_energy_range_uj").read_text())
+                wrap = int((dom / "max_energy_range_uj").read_text())
             except OSError:
-                self._rapl_max = 2**32
+                wrap = 2**32
+            # Every package, not just the first. A two-socket board exposes one
+            # domain per socket, and stopping at the first halves the CPU figure
+            # on exactly the machines most likely to have two.
+            self._rapl.append({"energy": energy, "max": wrap, "prev": None})
+        if self._rapl:
             self.source = "rapl"
-            return
+
+    @property
+    def packages(self) -> int:
+        return len(self._rapl)
 
     @staticmethod
     def _find_cpu_temp() -> Path | None:
@@ -296,24 +304,34 @@ class CpuReader:
             return None
 
     def power(self, util_pct: float, now: float) -> float:
-        if self._rapl_path is not None:
-            try:
-                energy = int(self._rapl_path.read_text())
-            except OSError:
-                self._rapl_path, self.source = None, "estimated"
-                return self._estimate(util_pct)
-            prev, self._rapl_prev = self._rapl_prev, (now, energy)
-            if prev is not None:
-                dt = now - prev[0]
-                d_uj = energy - prev[1]
-                if d_uj < 0:  # counter wrapped
-                    d_uj += self._rapl_max
-                if dt > 0:
-                    watts = (d_uj / 1e6) / dt * float(self.cfg["cpu"]["rapl_scale"])
-                    if 0 <= watts < 1000:
-                        return watts
+        if not self._rapl:
             return self._estimate(util_pct)
-        return self._estimate(util_pct)
+        total = 0.0
+        complete = True
+        for dom in self._rapl:
+            try:
+                energy = int(dom["energy"].read_text())
+            except OSError:
+                # The counters went away (permissions, hotplug): fall back for
+                # good rather than reporting a partial socket as the whole CPU.
+                self._rapl, self.source = [], "estimated"
+                return self._estimate(util_pct)
+            prev, dom["prev"] = dom["prev"], (now, energy)
+            if prev is None:
+                complete = False
+                continue
+            dt = now - prev[0]
+            d_uj = energy - prev[1]
+            if d_uj < 0:  # counter wrapped
+                d_uj += dom["max"]
+            if dt <= 0:
+                complete = False
+                continue
+            total += (d_uj / 1e6) / dt
+        if not complete:
+            return self._estimate(util_pct)
+        watts = total * float(self.cfg["cpu"]["rapl_scale"])
+        return watts if 0 <= watts < 1000 else self._estimate(util_pct)
 
     def _estimate(self, util_pct: float) -> float:
         c = self.cfg["cpu"]
@@ -330,36 +348,87 @@ class CpuReader:
             return None
 
 
-class GpuReader:
-    """NVIDIA GPU sampling via nvidia-smi."""
+def aggregate_gpus(devices: list[dict]) -> dict:
+    """Collapse per-device readings into the host-level view.
 
-    FIELDS = ("power.draw", "utilization.gpu", "memory.used", "memory.total",
+    Power is the sum across every device, and is unknown when ANY device's
+    power is unknown: a host total that quietly drops a card is the
+    multi-device form of the false zero, and it understates by whole
+    hundreds of watts rather than a rounding error.
+
+    Memory and limits sum over whatever is known. Temperature, fan and clock
+    take the peak, since the question they answer is "is anything hot".
+    """
+    if not devices:
+        return {"power_w": None, "util": None, "mem_used": None, "mem_total": None,
+                "temp": None, "fan": None, "clock_mhz": None, "limit_w": None,
+                "name": None, "count": 0}
+
+    powers = [d.get("power_w") for d in devices]
+    power = None if any(p is None for p in powers) else sum(powers)
+
+    def total(key):
+        known = [d[key] for d in devices if d.get(key) is not None]
+        return sum(known) if known else None
+
+    def peak(key):
+        known = [d[key] for d in devices if d.get(key) is not None]
+        return max(known) if known else None
+
+    names = [d.get("name") for d in devices if d.get("name")]
+    if len(devices) == 1:
+        name = names[0] if names else None
+    elif names and len(set(names)) == 1:
+        name = f"{len(devices)} x {names[0]}"
+    else:
+        name = f"{len(devices)} GPUs"
+
+    return {"power_w": power, "util": peak("util"), "mem_used": total("mem_used"),
+            "mem_total": total("mem_total"), "temp": peak("temp"), "fan": peak("fan"),
+            "clock_mhz": peak("clock_mhz"), "limit_w": total("limit_w"),
+            "name": name, "count": len(devices)}
+
+
+class GpuReader:
+    """NVIDIA GPU sampling via nvidia-smi, across every installed device."""
+
+    FIELDS = ("index", "power.draw", "utilization.gpu", "memory.used", "memory.total",
               "temperature.gpu", "fan.speed", "clocks.sm")
 
     def __init__(self, cfg: dict):
         self.enabled = bool(cfg["gpu"]["enabled"]) and shutil.which("nvidia-smi") is not None
         self.name = None
         self.power_limit = 350.0
+        self.devices: list[dict] = []      # identity per device, by index
         self.fail_count = 0
         self._identify_countdown = 0
         if self.enabled:
             self._identify()
 
     def _identify(self) -> bool:
-        """Read the card's name and power limit. Retried until it succeeds: with
+        """Read each card's name and power limit. Retried until it succeeds: with
         lingering enabled the service starts at boot, which can be before the
         NVIDIA driver is ready -- a one-shot query there would leave the name
         blank and the power limit stuck on the fallback for the whole uptime."""
-        info = self._run(["--query-gpu=name,enforced.power.limit",
+        info = self._run(["--query-gpu=index,name,enforced.power.limit",
                           "--format=csv,noheader,nounits"])
         if not info:
             return False
-        parts = info[0].split(", ")
-        self.name = parts[0]
-        try:
-            self.power_limit = float(parts[1])
-        except (IndexError, ValueError):
-            pass
+        devices = []
+        for row in info:
+            parts = [p.strip() for p in row.split(", ")]
+            if len(parts) < 2:
+                continue
+            index = _num(parts[0])
+            limit = _num(parts[2]) if len(parts) > 2 else None
+            devices.append({"index": int(index) if index is not None else len(devices),
+                            "name": parts[1],
+                            "limit_w": limit if limit else 350.0})
+        if not devices:
+            return False
+        self.devices = devices
+        self.name = devices[0]["name"]
+        self.power_limit = sum(d["limit_w"] for d in devices)
         return True
 
     @staticmethod
@@ -387,13 +456,24 @@ class GpuReader:
                 self._identify_countdown = 0 if self._identify() else 30
             else:
                 self._identify_countdown -= 1
-        vals: list[float | None] = []
-        for item in rows[0].split(", "):
-            try:
-                vals.append(float(item))
-            except ValueError:
-                vals.append(None)
-        power, util, mem_used, mem_total, temp, fan, clock = (vals + [None] * 7)[:7]
+        devices = []
+        for row in rows:
+            vals = dict(zip(self.FIELDS, [_num(item) for item in row.split(", ")]))
+            index = vals.get("index")
+            index = int(index) if index is not None else len(devices)
+            meta = next((d for d in self.devices if d["index"] == index), None)
+            devices.append({
+                "index": index,
+                "name": meta["name"] if meta else self.name,
+                "power_w": vals.get("power.draw"),
+                "util": vals.get("utilization.gpu"),
+                "mem_used": vals.get("memory.used"),
+                "mem_total": vals.get("memory.total"),
+                "temp": vals.get("temperature.gpu"),
+                "fan": vals.get("fan.speed"),
+                "clock_mhz": vals.get("clocks.sm"),
+                "limit_w": meta["limit_w"] if meta else self.power_limit,
+            })
         procs = []
         app_rows = self._run(["--query-compute-apps=pid,process_name,used_memory",
                               "--format=csv,noheader,nounits"]) or []
@@ -403,9 +483,9 @@ class GpuReader:
                 procs.append({"pid": parts[0],
                               "name": Path(parts[1]).name[:40],
                               "mem_mib": _num(parts[2])})
-        return {"present": True, "power_w": power, "util": util, "mem_used": mem_used,
-                "mem_total": mem_total, "temp": temp, "fan": fan, "clock_mhz": clock,
-                "procs": procs, "limit_w": self.power_limit, "name": self.name}
+        sample = aggregate_gpus(devices)
+        sample.update({"present": True, "procs": procs, "devices": devices})
+        return sample
 
 
 def _num(text: str) -> float | None:
@@ -828,7 +908,10 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
                 "util": gpu.get("util"), "temp": gpu.get("temp"), "fan": gpu.get("fan"),
                 "clock_mhz": gpu.get("clock_mhz"), "mem_used": gpu.get("mem_used"),
                 "mem_total": gpu.get("mem_total"), "limit_w": gpu.get("limit_w"),
-                "procs": gpu.get("procs", []), "error": gpu.get("error", False)},
+                "procs": gpu.get("procs", []), "error": gpu.get("error", False),
+                # Host aggregate above, per-device below. The aggregate fields
+                # keep their shape so existing clients are unaffected.
+                "count": gpu.get("count", 0), "devices": gpu.get("devices", [])},
         "mem": latest.get("mem", {}), "disk": latest.get("disk", {}),
         "net": latest.get("net", {}), "busy": bool(latest["busy"]),
         "totals": totals(store, cfg),

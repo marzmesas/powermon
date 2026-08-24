@@ -7,7 +7,8 @@ Runs as a systemd **user** service, samples every 2 s, keeps history in SQLite,
 and serves a dashboard plus a JSON API on `127.0.0.1:8787`.
 
 - **Dashboard** — <http://localhost:8787>
-- **Terminal** — `pwr` (snapshot) · `pwr -w` (live) · `pwr --json`
+- **Terminal** — `pwr` (snapshot) · `pwr -w` (live) · `pwr --json`. For a remote
+  instance, set `POWERMON_TOKEN` or pass `--token`.
 - **Overhead** — 0.25 % of one core and ~35 MB RAM, measured on the reference
   box at the default 2 s interval. GPU telemetry comes from `libnvidia-ml.so`
   through `ctypes` rather than forking `nvidia-smi`, which is what took it from
@@ -197,7 +198,7 @@ TLS and real auth.
 |---|---|
 | `GET /api/now` | current sample, period totals, 3-minute sparklines, metadata. `gpu.*` is the host aggregate across every card; `gpu.devices[]` carries each one separately |
 | `GET /api/history?range=24h\|7d\|30d\|90d` | time series (24 h = 5-min averages from raw samples; longer = hourly totals) |
-| `GET /healthz` | `{"ok": true, "last_sample_age_s": …}` |
+| `GET /healthz` | the same `health` block as `/api/now`: `ok`, `last_sample_age_s`, `coverage_today`, the live CPU/GPU sources, and an `issues` list at `error` / `warn` / `info` |
 
 Useful for logging a run's energy cost from a training script:
 

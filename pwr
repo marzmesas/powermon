@@ -5,12 +5,16 @@
   pwr -w         live, refreshes every 2s (Ctrl-C to quit)
   pwr --json     raw JSON from the API
   pwr --url URL  point at a different host (default: from config.toml)
+
+Reaching a remote instance needs the server's token, from POWERMON_TOKEN or
+--token. Loopback needs none.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -21,6 +25,7 @@ HERE = Path(__file__).resolve().parent
 BLOCKS = "▁▂▃▄▅▆▇█"
 RESET, DIM, BOLD = "\033[0m", "\033[2m", "\033[1m"
 BLUE, ORANGE, GREEN, RED = "\033[38;5;33m", "\033[38;5;209m", "\033[38;5;35m", "\033[38;5;167m"
+YELLOW = "\033[38;5;179m"
 
 
 def default_url() -> str:
@@ -42,8 +47,12 @@ def default_url() -> str:
     return f"http://{host}:{port}"
 
 
-def fetch(url: str) -> dict:
-    with urllib.request.urlopen(url + "/api/now", timeout=8) as resp:
+def fetch(url: str, token: str | None = None) -> dict:
+    request = urllib.request.Request(url + "/api/now")
+    if token:
+        # A header, never the query string: that ends up in logs and history.
+        request.add_header("X-Powermon-Token", token)
+    with urllib.request.urlopen(request, timeout=8) as resp:
         return json.load(resp)
 
 
@@ -109,6 +118,14 @@ def render(d: dict, color: bool = True) -> str:
     src = "CPU measured (RAPL)" if p["source"] == "rapl" else "CPU estimated from load"
     lines.append(c(DIM, f"{sym}{d['meta']['rate']}/kWh · {src} · "
                         f"uptime {d['meta']['uptime_s'] / 86400:.1f}d"))
+
+    # Anything that makes the numbers above less than the whole truth. The
+    # "info" level is already covered by the source line, so it is not repeated.
+    marks = {"error": (RED, "!"), "warn": (YELLOW, "~")}
+    for issue in d.get("health", {}).get("issues", []):
+        if issue["level"] in marks:
+            colour, glyph = marks[issue["level"]]
+            lines.append(c(colour, f"{glyph} {issue['message']}"))
     return "\n".join(lines)
 
 
@@ -118,20 +135,22 @@ def main() -> int:
     ap.add_argument("-n", "--interval", type=float, default=2.0, help="watch interval (s)")
     ap.add_argument("--json", action="store_true", help="print the raw API payload")
     ap.add_argument("--url", default=default_url(), help="powermon base URL")
+    ap.add_argument("--token", default=os.environ.get("POWERMON_TOKEN"),
+                    help="access token for a remote instance (or POWERMON_TOKEN)")
     args = ap.parse_args()
 
     color = sys.stdout.isatty()
     try:
         if args.json:
-            print(json.dumps(fetch(args.url), indent=2))
+            print(json.dumps(fetch(args.url, args.token), indent=2))
             return 0
         if not args.watch:
-            print(render(fetch(args.url), color))
+            print(render(fetch(args.url, args.token), color))
             return 0
         print("\033[?25l", end="")  # hide cursor
         try:
             while True:
-                frame = render(fetch(args.url), color)
+                frame = render(fetch(args.url, args.token), color)
                 sys.stdout.write("\033[H\033[J" + frame + "\n")
                 sys.stdout.flush()
                 time.sleep(max(0.5, args.interval))
@@ -139,6 +158,16 @@ def main() -> int:
             return 0
         finally:
             print("\033[?25h", end="")
+    except urllib.error.HTTPError as exc:
+        # A rejected token and an absent server need different fixes, so they
+        # get different messages.
+        if exc.code == 401:
+            print(f"pwr: {args.url} rejected the token.\n"
+                  "     Set POWERMON_TOKEN to server.token from its config.toml, "
+                  "or use --token.", file=sys.stderr)
+        else:
+            print(f"pwr: {args.url} returned HTTP {exc.code}", file=sys.stderr)
+        return 1
     except urllib.error.URLError as exc:
         print(f"pwr: cannot reach powermon at {args.url} ({exc.reason})\n"
               f"     start it with:  systemctl --user start powermon", file=sys.stderr)

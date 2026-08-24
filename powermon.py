@@ -1138,6 +1138,53 @@ def history(store: Store, monitor: Monitor, span: str) -> dict:
     return series
 
 
+def health(monitor: Monitor, period_totals: dict, cfg: dict,
+           now: float | None = None) -> dict:
+    """Is the number on screen trustworthy right now?
+
+    Three distinct questions, deliberately not merged into one boolean: is the
+    sampler running, is every meter readable, and how much of the recorded
+    history was complete. A client should be able to say which one is wrong,
+    because the fixes differ.
+
+    Levels: "error" means the reading is wrong or absent, "warn" means it is
+    incomplete, "info" is a standing caveat rather than a fault.
+    """
+    now = now or time.time()
+    interval = float(cfg["sampling"]["interval"])
+    age = now - (monitor.latest.get("ts") or 0)
+    # Matches /healthz: a few missed ticks is a hiccup, 30 s is a wedged sampler.
+    sampling_ok = age < max(30.0, interval * 5)
+
+    issues = []
+    if not sampling_ok:
+        issues.append({"level": "error", "code": "sampler_stalled",
+                       "message": f"No sample for {age:.0f} s: the sampler is not running."})
+    if monitor.latest.get("gpu", {}).get("error"):
+        issues.append({"level": "error", "code": "gpu_unreadable",
+                       "message": "GPU sensor unreadable: its power is missing from the total."})
+    today = period_totals.get("today", {})
+    coverage = today.get("coverage", 1.0)
+    if coverage < 0.999:
+        issues.append({"level": "warn", "code": "partial_coverage",
+                       "message": f"{100 * (1 - coverage):.1f}% of today was not measured; "
+                                  "energy and cost below are an undercount."})
+    if monitor.cpu.source != "rapl":
+        issues.append({"level": "info", "code": "cpu_estimated",
+                       "message": "CPU power is modelled from utilisation, not measured "
+                                  "(±20 W). See the README to enable RAPL."})
+    return {
+        "ok": sampling_ok and not any(i["level"] == "error" for i in issues),
+        "last_sample_age_s": age,
+        "coverage_today": coverage,
+        "cpu_source": monitor.cpu.source,
+        "gpu_source": monitor.gpu.source if monitor.gpu.enabled else None,
+        "cpu_packages": monitor.cpu.packages,
+        "gpu_count": monitor.latest.get("gpu", {}).get("count", 0),
+        "issues": issues,
+    }
+
+
 def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
     latest = dict(monitor.latest)
     if not latest:
@@ -1145,6 +1192,7 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
     gpu = latest.get("gpu", {})
     rate = monitor.rate
     tariff = cfg["tariff"]
+    period_totals = totals(store, cfg)
     spark = {"ts": [], "total": [], "gpu": [], "cpu": [], "gpu_temp": [], "cpu_temp": []}
     for r in monitor.recent[-90:]:
         spark["ts"].append(r["ts"])
@@ -1175,7 +1223,8 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
                 "count": gpu.get("count", 0), "devices": gpu.get("devices", [])},
         "mem": latest.get("mem", {}), "disk": latest.get("disk", {}),
         "net": latest.get("net", {}), "busy": bool(latest["busy"]),
-        "totals": totals(store, cfg),
+        "totals": period_totals,
+        "health": health(monitor, period_totals, cfg),
         "session": {"wh": monitor.session_wh, "cost": monitor.session_wh / 1000.0 * rate,
                     "seconds": time.time() - monitor.started},
         "spark": spark,
@@ -1299,8 +1348,9 @@ class Handler(BaseHTTPRequestHandler):
                     span = "24h"
                 self._json({"range": span, "series": history(self.store, self.monitor, span)})
             elif path == "/healthz":
-                age = time.time() - (self.monitor.latest.get("ts") or 0)
-                self._json({"ok": age < 30, "last_sample_age_s": age})
+                # Same verdict as /api/now's health block, so a probe and the
+                # dashboard can never disagree about whether this host is well.
+                self._json(health(self.monitor, totals(self.store, self.cfg), self.cfg))
             else:
                 self._json({"error": "not found"}, 404)
         except BrokenPipeError:

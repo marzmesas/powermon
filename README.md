@@ -8,10 +8,11 @@ and serves a dashboard plus a JSON API on `127.0.0.1:8787`.
 
 - **Dashboard** — <http://localhost:8787>
 - **Terminal** — `pwr` (snapshot) · `pwr -w` (live) · `pwr --json`
-- **Overhead** — 2.5 % of one core and ~35 MB RAM, measured over 62 h on the
-  reference box at the default 2 s interval. About 80 % of that is forking
-  `nvidia-smi` twice per sample, not Python itself. Runs at `Nice=10` with idle
-  I/O priority so it never competes with a training job.
+- **Overhead** — 0.25 % of one core and ~35 MB RAM, measured on the reference
+  box at the default 2 s interval. GPU telemetry comes from `libnvidia-ml.so`
+  through `ctypes` rather than forking `nvidia-smi`, which is what took it from
+  2.35 % (47 ms per sample) down to 5 ms. Runs at `Nice=10` with idle I/O
+  priority so it never competes with a training job.
 
 ## Install
 
@@ -40,7 +41,7 @@ wall_watts = (cpu_watts + gpu_watts + baseline_watts) / psu_efficiency
 
 | Component | Source | Trust |
 |---|---|---|
-| GPU watts | every card's own sensor, summed, via `nvidia-smi` | **measured**, accurate |
+| GPU watts | every card's own sensor, summed, via NVML (`nvidia-smi` if the library is missing) | **measured**, accurate |
 | CPU watts | RAPL package energy counters, all sockets, if readable | **measured** (see below) |
 | CPU watts | otherwise: utilisation curve `idle_w → max_w` | **estimated**, ±20 W |
 | Baseline | configured constant (board, RAM, NVMe, fans) | assumption |

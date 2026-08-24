@@ -94,6 +94,31 @@
   }
   button:focus-visible { outline: 2px solid var(--series-gpu); outline-offset: 1px; }
 
+  /* ---- health banners ---- */
+  #banners { display: grid; gap: 8px; margin-bottom: 14px; }
+  #banners:empty { display: none; }
+  .banner {
+    display: flex; gap: 9px; align-items: baseline; font-size: 13px;
+    border: 1px solid var(--border); border-left-width: 3px; border-radius: 8px;
+    padding: 9px 12px; background: var(--surface-1); color: var(--text-secondary);
+  }
+  .banner b { color: var(--text-primary); font-weight: 600; }
+  .banner.error { border-left-color: var(--status-critical); }
+  .banner.warn { border-left-color: var(--status-warning); }
+  .banner.info { border-left-color: var(--text-muted); }
+
+  /* ---- per-device rows ---- */
+  .devs { margin-top: 10px; display: grid; gap: 4px; }
+  .dev {
+    display: flex; gap: 8px; font-size: 12px; color: var(--text-secondary);
+    border-top: 1px solid var(--border); padding-top: 5px; white-space: nowrap;
+  }
+  .dev .dev-name {
+    flex: 1; min-width: 0; color: var(--text-primary);
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .dev .dev-num { font-variant-numeric: tabular-nums; text-align: right; }
+
   /* ---- cards ---- */
   .card {
     background: var(--surface-1); border: 1px solid var(--border);
@@ -220,6 +245,9 @@
   <span class="spacer"></span>
   <button id="theme-btn" title="Switch light / dark">Theme</button>
 </header>
+
+<!-- anything that makes the numbers below less than the whole truth -->
+<div id="banners" role="status" aria-live="polite"></div>
 
 <!-- hero + live rates -->
 <section class="card" aria-labelledby="hero-label" style="margin-bottom:14px">
@@ -440,6 +468,28 @@ function drawSpark(svg, values, colorVar) {
   }
 }
 
+/* el() above builds SVG nodes for the charts; this is its HTML counterpart. */
+function hel(tag, cls, parent, txt) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (txt != null) node.textContent = txt;
+  if (parent) parent.appendChild(node);
+  return node;
+}
+
+/* Banners say what is wrong and what it means for the numbers. Rebuilt each
+   tick from the server's own verdict, so the dashboard and /healthz agree. */
+function renderBanners(issues) {
+  const box = $("banners");
+  box.textContent = "";
+  const heading = { error: "Problem", warn: "Incomplete", info: "Note" };
+  (issues || []).forEach((it) => {
+    const div = hel("div", "banner " + it.level, box);
+    hel("b", null, div, heading[it.level] || "Note");
+    hel("span", null, div, it.message);
+  });
+}
+
 function renderLive(d) {
   NOW = d;
   SYM = d.meta.symbol || "€";
@@ -466,12 +516,37 @@ function renderLive(d) {
   m.textContent = "";
   const g = d.gpu;
   if (g.present) {
-    m.appendChild(meter("GPU power", fmt.w(d.power.gpu_w), "W",
+    const many = (g.count || 1) > 1;
+    const gpuMeter = meter("GPU power", fmt.w(d.power.gpu_w), "W",
       100 * d.power.gpu_w / (g.limit_w || 350),
-      `limit ${fmt.w(g.limit_w)} W · ${g.name || "GPU"}`));
-    m.appendChild(meter("GPU load", fmt.w(g.util), "%", g.util || 0,
+      `limit ${fmt.w(g.limit_w)} W · ${g.name || "GPU"}`);
+    // With one card the aggregate IS the card, so a breakdown would just
+    // repeat it. With several, the aggregate hides which one is working.
+    if (many) {
+      const devs = hel("div", "devs", gpuMeter);
+      const list = g.devices || [];
+      // The card header already names the model when they all match, so
+      // repeating it per row only makes each row wrap to four lines.
+      const mixed = new Set(list.map((x) => x.name)).size > 1;
+      list.forEach((dev) => {
+        const row = hel("div", "dev", devs);
+        hel("span", "dev-name", row,
+          mixed ? `#${dev.index} ${dev.name || "GPU"}` : `#${dev.index}`);
+        // An unreadable sensor shows a dash, never a zero.
+        hel("span", "dev-num", row,
+          dev.power_w == null ? "—" : fmt.w(dev.power_w) + " W");
+        hel("span", "dev-num", row,
+          dev.temp == null ? "—" : fmt.w(dev.temp) + " °C");
+        hel("span", "dev-num", row,
+          dev.mem_used == null ? "—" : fmt.n1(dev.mem_used / 1024) + " GiB");
+      });
+    }
+    m.appendChild(gpuMeter);
+    m.appendChild(meter(many ? "GPU load (busiest)" : "GPU load", fmt.w(g.util), "%",
+      g.util || 0,
       `${fmt.w(g.temp)} °C · fan ${fmt.w(g.fan)}% · ${fmt.w(g.clock_mhz)} MHz`));
-    m.appendChild(meter("GPU memory", fmt.n1((g.mem_used || 0) / 1024), "GiB",
+    m.appendChild(meter(many ? "GPU memory (total)" : "GPU memory",
+      fmt.n1((g.mem_used || 0) / 1024), "GiB",
       100 * (g.mem_used || 0) / (g.mem_total || 1),
       `of ${fmt.n1((g.mem_total || 0) / 1024)} GiB`));
   }
@@ -489,10 +564,13 @@ function renderLive(d) {
   const t = $("tiles");
   t.textContent = "";
   const T = d.totals;
+  // Coverage is only worth the words when it is not total.
+  const cov = (p) => (p.coverage != null && p.coverage < 0.999)
+    ? ` · ${fmt.w(100 * p.coverage)}% measured` : "";
   t.appendChild(tile("Today", SYM + fmt.money(T.today.cost), "",
-    `${fmt.kwh(T.today.kwh)} kWh · peak ${fmt.w(T.today.peak_w)} W`));
+    `${fmt.kwh(T.today.kwh)} kWh · peak ${fmt.w(T.today.peak_w)} W${cov(T.today)}`));
   t.appendChild(tile("Month to date", SYM + fmt.money(T.month.cost), "",
-    `${fmt.kwh(T.month.kwh)} kWh · ${fmt.dur(T.month.hours * 3600)} recorded`));
+    `${fmt.kwh(T.month.kwh)} kWh · ${fmt.dur(T.month.hours * 3600)} recorded${cov(T.month)}`));
   t.appendChild(tile("Projected month", SYM + fmt.money(T.month.projected_30d_cost), "",
     `30 days at the average draw recorded · ${fmt.kwh(T.month.projected_30d_kwh)} kWh`));
   const idleShare = T.month.kwh ? 100 * T.month.idle_kwh / T.month.kwh : 0;
@@ -520,6 +598,8 @@ function renderLive(d) {
     tbl.appendChild(tb);
     p.appendChild(tbl);
   }
+
+  renderBanners((d.health || {}).issues);
 
   $("model-note").textContent =
     `Wall power = (CPU + GPU + ${fmt.w(d.meta.baseline_w)} W baseline) ÷ `
@@ -882,12 +962,38 @@ function renderHistory(S) {
 
 /* ---------------------------------------------------------------- fetching */
 let lastOk = 0;
+/* Why the last fetch failed, so the banner can say something useful instead of
+   leaving stale numbers on screen with no explanation. */
+let transportIssue = null;
+
+function describeFailure(status) {
+  if (status === 401) {
+    return { level: "error", message: "Not authorised. Open this page once as "
+             + "?token=YOUR_TOKEN, or check server.token in config.toml." };
+  }
+  if (status) {
+    return { level: "error", message: `The server returned HTTP ${status}. `
+             + "The figures below are the last good reading." };
+  }
+  return { level: "error", message: "Cannot reach powermon. The figures below "
+           + "are the last good reading." };
+}
+
 async function tickNow() {
   try {
     const r = await fetch("api/now", { cache: "no-store" });
+    // A 4xx/5xx still resolves the promise: without this check an error page
+    // was parsed as data, or silently swallowed, and stale numbers stayed put
+    // looking live.
+    if (!r.ok) throw Object.assign(new Error("http"), { status: r.status });
     renderLive(await r.json());
+    transportIssue = null;
     lastOk = Date.now();
-  } catch (e) { /* keep the last render on screen */ }
+  } catch (e) {
+    transportIssue = describeFailure(e.status);
+    // Keep the last render, but say why it is not moving.
+    renderBanners([transportIssue, ...((NOW && NOW.health && NOW.health.issues) || [])]);
+  }
   const stale = Date.now() - lastOk > 12000;
   $("dot").className = "dot" + (stale ? " stale" : "");
   $("live-txt").textContent = stale ? "no data" : "live";
@@ -898,8 +1004,9 @@ async function tickHistory() {
   cards.forEach((c) => c.classList.add("loading"));
   try {
     const r = await fetch("api/history?range=" + RANGE, { cache: "no-store" });
+    if (!r.ok) throw Object.assign(new Error("http"), { status: r.status });
     renderHistory((await r.json()).series);
-  } catch (e) { /* hold previous render */ }
+  } catch (e) { /* hold previous render; tickNow owns the banner */ }
   document.querySelectorAll(".plot").forEach((c) => c.classList.remove("loading"));
 }
 

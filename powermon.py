@@ -16,6 +16,7 @@ Power model
 
 from __future__ import annotations
 
+import ctypes
 import hmac
 import ipaddress
 import json
@@ -389,14 +390,169 @@ def aggregate_gpus(devices: list[dict]) -> dict:
             "name": name, "count": len(devices)}
 
 
+class Nvml:
+    """The driver's own C library, called directly through ctypes.
+
+    Forking nvidia-smi twice per sample cost about 40 ms of CPU, some 80 % of
+    the daemon's total, because process creation dwarfs the query itself. The
+    same numbers come from libnvidia-ml.so for about 1 ms, and ctypes is
+    standard library, so this costs no dependency.
+
+    Every accessor returns None rather than raising or substituting a zero: an
+    unreadable sensor is an unknown, and the ledger distinguishes the two.
+    """
+
+    SUCCESS = 0
+    INSUFFICIENT_SIZE = 7
+    TEMPERATURE_GPU = 0
+    CLOCK_SM = 1
+
+    class _Util(ctypes.Structure):
+        _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
+
+    class _Mem(ctypes.Structure):
+        _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong),
+                    ("used", ctypes.c_ulonglong)]
+
+    class _Proc(ctypes.Structure):
+        # v3 layout; the compiler pads after pid to align the 64-bit member.
+        _fields_ = [("pid", ctypes.c_uint), ("used_mem", ctypes.c_ulonglong),
+                    ("gpu_instance", ctypes.c_uint), ("compute_instance", ctypes.c_uint)]
+
+    def __init__(self):
+        self.lib = None
+        self.handles: list = []
+        self._procs_fn = None
+        try:
+            lib = ctypes.CDLL("libnvidia-ml.so.1")
+        except OSError:
+            return
+        if lib.nvmlInit_v2() != self.SUCCESS:
+            return
+        count = ctypes.c_uint()
+        if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != self.SUCCESS:
+            lib.nvmlShutdown()
+            return
+        handles = []
+        for index in range(count.value):
+            handle = ctypes.c_void_p()
+            if lib.nvmlDeviceGetHandleByIndex_v2(index, ctypes.byref(handle)) == self.SUCCESS:
+                handles.append((index, handle))
+        if not handles:
+            lib.nvmlShutdown()
+            return
+        self.lib, self.handles = lib, handles
+        # Driver-dependent name; older drivers expose v2 or an unsuffixed symbol.
+        for suffix in ("_v3", "_v2", ""):
+            self._procs_fn = getattr(lib, f"nvmlDeviceGetComputeRunningProcesses{suffix}", None)
+            if self._procs_fn is not None:
+                break
+
+    @property
+    def available(self) -> bool:
+        return self.lib is not None
+
+    def shutdown(self) -> None:
+        if self.lib is not None:
+            try:
+                self.lib.nvmlShutdown()
+            except OSError:
+                pass
+            self.lib, self.handles = None, []
+
+    def _uint(self, fn_name, handle, *extra) -> float | None:
+        fn = getattr(self.lib, fn_name, None)
+        if fn is None:
+            return None
+        out = ctypes.c_uint()
+        if fn(handle, *extra, ctypes.byref(out)) != self.SUCCESS:
+            return None
+        return float(out.value)
+
+    def identify(self) -> list[dict]:
+        out = []
+        for index, handle in self.handles:
+            buf = ctypes.create_string_buffer(96)
+            name = None
+            if self.lib.nvmlDeviceGetName(handle, buf, 96) == self.SUCCESS:
+                name = buf.value.decode("utf-8", "replace")
+            limit_mw = self._uint("nvmlDeviceGetEnforcedPowerLimit", handle)
+            out.append({"index": index, "name": name,
+                        "limit_w": limit_mw / 1000.0 if limit_mw else 350.0})
+        return out
+
+    def sample(self) -> list[dict] | None:
+        """Per-device readings, or None if the library has gone away."""
+        if not self.available:
+            return None
+        devices = []
+        for index, handle in self.handles:
+            power_mw = self._uint("nvmlDeviceGetPowerUsage", handle)
+            util = self._Util()
+            if self.lib.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util)) == self.SUCCESS:
+                util_pct = float(util.gpu)
+            else:
+                util_pct = None
+            mem = self._Mem()
+            if self.lib.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem)) == self.SUCCESS:
+                mem_used, mem_total = mem.used / 1048576.0, mem.total / 1048576.0
+            else:
+                mem_used = mem_total = None
+            devices.append({
+                "index": index,
+                "power_w": power_mw / 1000.0 if power_mw is not None else None,
+                "util": util_pct,
+                "mem_used": mem_used,
+                "mem_total": mem_total,
+                "temp": self._uint("nvmlDeviceGetTemperature", handle, self.TEMPERATURE_GPU),
+                "fan": self._uint("nvmlDeviceGetFanSpeed", handle),
+                "clock_mhz": self._uint("nvmlDeviceGetClockInfo", handle, self.CLOCK_SM),
+            })
+        return devices
+
+    def processes(self, limit: int = 6) -> list[dict]:
+        if not self.available or self._procs_fn is None:
+            return []
+        out = []
+        for _, handle in self.handles:
+            count = ctypes.c_uint(0)
+            # Count first: the call reports INSUFFICIENT_SIZE and fills in count.
+            rc = self._procs_fn(handle, ctypes.byref(count), None)
+            if rc not in (self.SUCCESS, self.INSUFFICIENT_SIZE) or count.value == 0:
+                continue
+            arr = (self._Proc * count.value)()
+            if self._procs_fn(handle, ctypes.byref(count), arr) != self.SUCCESS:
+                continue
+            for proc in arr[:count.value]:
+                buf = ctypes.create_string_buffer(256)
+                name = str(proc.pid)
+                if self.lib.nvmlSystemGetProcessName(proc.pid, buf, 256) == self.SUCCESS:
+                    # Full path, where nvidia-smi reported a basename.
+                    name = Path(buf.value.decode("utf-8", "replace")).name[:40]
+                out.append({"pid": str(proc.pid), "name": name,
+                            "mem_mib": proc.used_mem / 1048576.0})
+        return out[:limit]
+
+
 class GpuReader:
-    """NVIDIA GPU sampling via nvidia-smi, across every installed device."""
+    """NVIDIA GPU sampling across every installed device.
+
+    Prefers NVML through ctypes; falls back to parsing nvidia-smi when the
+    library cannot be loaded, which keeps behaviour identical on hosts where
+    only the binary is present.
+    """
 
     FIELDS = ("index", "power.draw", "utilization.gpu", "memory.used", "memory.total",
               "temperature.gpu", "fan.speed", "clocks.sm")
 
-    def __init__(self, cfg: dict):
-        self.enabled = bool(cfg["gpu"]["enabled"]) and shutil.which("nvidia-smi") is not None
+    def __init__(self, cfg: dict, nvml: "Nvml | None" = None):
+        want_gpu = bool(cfg["gpu"]["enabled"])
+        self.nvml = nvml if nvml is not None else (Nvml() if want_gpu else None)
+        if self.nvml is not None and not self.nvml.available:
+            self.nvml = None
+        # NVML alone is enough; nvidia-smi is only needed for the fallback path.
+        self.enabled = want_gpu and (self.nvml is not None
+                                     or shutil.which("nvidia-smi") is not None)
         self.name = None
         self.power_limit = 350.0
         self.devices: list[dict] = []      # identity per device, by index
@@ -405,11 +561,27 @@ class GpuReader:
         if self.enabled:
             self._identify()
 
+    @property
+    def source(self) -> str:
+        return "nvml" if self.nvml is not None else "nvidia-smi"
+
+    def close(self) -> None:
+        if self.nvml is not None:
+            self.nvml.shutdown()
+
     def _identify(self) -> bool:
         """Read each card's name and power limit. Retried until it succeeds: with
         lingering enabled the service starts at boot, which can be before the
         NVIDIA driver is ready -- a one-shot query there would leave the name
         blank and the power limit stuck on the fallback for the whole uptime."""
+        if self.nvml is not None:
+            devices = [d for d in self.nvml.identify() if d.get("name")]
+            if not devices:
+                return False
+            self.devices = devices
+            self.name = devices[0]["name"]
+            self.power_limit = sum(d["limit_w"] for d in devices)
+            return True
         info = self._run(["--query-gpu=index,name,enforced.power.limit",
                           "--format=csv,noheader,nounits"])
         if not info:
@@ -440,10 +612,36 @@ class GpuReader:
             return None
         return [ln for ln in (l.strip() for l in out.splitlines()) if ln]
 
+    def _sample_nvml(self) -> dict:
+        readings = self.nvml.sample()
+        if not readings:
+            self.fail_count += 1
+            return {"present": True, "error": True}
+        self.fail_count = 0
+        if self.name is None:
+            # Same throttled retry as the subprocess path: the driver may not
+            # have been ready when the service started at boot.
+            if self._identify_countdown <= 0:
+                self._identify_countdown = 0 if self._identify() else 30
+            else:
+                self._identify_countdown -= 1
+        devices = []
+        for reading in readings:
+            meta = next((d for d in self.devices if d["index"] == reading["index"]), None)
+            device = dict(reading)
+            device["name"] = meta["name"] if meta else self.name
+            device["limit_w"] = meta["limit_w"] if meta else self.power_limit
+            devices.append(device)
+        sample = aggregate_gpus(devices)
+        sample.update({"present": True, "procs": self.nvml.processes(), "devices": devices})
+        return sample
+
     def sample(self) -> dict:
         """Never raises: a driver hiccup yields None values, not a dead sampler."""
         if not self.enabled:
             return {"present": False}
+        if self.nvml is not None:
+            return self._sample_nvml()
         rows = self._run([f"--query-gpu={','.join(self.FIELDS)}", "--format=csv,noheader,nounits"])
         if not rows:
             self.fail_count += 1
@@ -791,6 +989,7 @@ class Monitor:
 
     def stop(self) -> None:
         self._stop.set()
+        self.gpu.close()
 
 
 # --------------------------------------------------------------------------- totals
@@ -1138,7 +1337,9 @@ def main() -> int:
     httpd = ThreadingHTTPServer((host, port), Handler)
     src = "RAPL (measured)" if monitor.cpu.source == "rapl" else "utilisation model (estimated)"
     print(f"powermon: http://{host}:{port}  db={db_path}", flush=True)
-    print(f"powermon: CPU power from {src}; GPU: {monitor.gpu.name or 'none detected'}", flush=True)
+    gpu_src = f" via {monitor.gpu.source}" if monitor.gpu.enabled else ""
+    print(f"powermon: CPU power from {src}; "
+          f"GPU: {monitor.gpu.name or 'none detected'}{gpu_src}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

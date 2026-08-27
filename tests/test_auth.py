@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from powermon import (  # noqa: E402
     authorize,
+    hash_token,
     effective_client,
     in_networks,
     is_loopback,
@@ -22,6 +23,18 @@ from powermon import (  # noqa: E402
 )
 
 TOKEN = "s3cret-token"
+
+
+def keys_for(token=TOKEN):
+    """The one-key shorthand, as load_keys() builds it from server.token."""
+    if not token:
+        return []
+    return [{"name": "config-token", "scope": "admin",
+             "hash": hash_token(token), "created": None}]
+
+
+def allowed(**kw):
+    return authorize(**kw)[0]
 
 
 class IsLoopbackTests(unittest.TestCase):
@@ -111,35 +124,45 @@ class EffectiveClientTests(unittest.TestCase):
 class AuthorizeTests(unittest.TestCase):
     def test_loopback_needs_no_token(self):
         # Keeps `pwr` and SSH tunnels working with no configuration.
-        self.assertTrue(authorize(client="127.0.0.1", token_supplied=None,
-                                  token_configured=TOKEN))
+        self.assertTrue(allowed(client="127.0.0.1", token_supplied=None,
+                                keys=keys_for()))
 
     def test_empty_token_denies_remote_instead_of_allowing_everyone(self):
         # The P0. Previously this returned True for every client on earth.
-        self.assertFalse(authorize(client="192.168.0.30", token_supplied=None,
-                                   token_configured=""))
-        self.assertFalse(authorize(client="192.168.0.30", token_supplied="anything",
-                                   token_configured=""))
+        self.assertFalse(allowed(client="192.168.0.30", token_supplied=None,
+                                 keys=keys_for("")))
+        self.assertFalse(allowed(client="192.168.0.30", token_supplied="anything",
+                                 keys=keys_for("")))
 
     def test_remote_with_the_right_token(self):
-        self.assertTrue(authorize(client="100.82.182.116", token_supplied=TOKEN,
-                                  token_configured=TOKEN))
+        self.assertTrue(allowed(client="100.82.182.116", token_supplied=TOKEN,
+                                keys=keys_for()))
 
     def test_remote_with_a_wrong_or_missing_token(self):
-        self.assertFalse(authorize(client="100.82.182.116", token_supplied="nope",
-                                   token_configured=TOKEN))
-        self.assertFalse(authorize(client="100.82.182.116", token_supplied=None,
-                                   token_configured=TOKEN))
+        self.assertFalse(allowed(client="100.82.182.116", token_supplied="nope",
+                                 keys=keys_for()))
+        self.assertFalse(allowed(client="100.82.182.116", token_supplied=None,
+                                 keys=keys_for()))
 
     def test_non_ascii_token_does_not_raise(self):
-        self.assertFalse(authorize(client="192.168.0.30", token_supplied="café",
-                                   token_configured=TOKEN))
+        self.assertFalse(allowed(client="192.168.0.30", token_supplied="café",
+                                 keys=keys_for()))
 
     def test_require_token_always_removes_the_loopback_exemption(self):
-        self.assertFalse(authorize(client="127.0.0.1", token_supplied=None,
-                                   token_configured=TOKEN, require_token_always=True))
-        self.assertTrue(authorize(client="127.0.0.1", token_supplied=TOKEN,
-                                  token_configured=TOKEN, require_token_always=True))
+        self.assertFalse(allowed(client="127.0.0.1", token_supplied=None,
+                                 keys=keys_for(), require_token_always=True))
+        self.assertTrue(allowed(client="127.0.0.1", token_supplied=TOKEN,
+                                keys=keys_for(), require_token_always=True))
+
+    def test_the_matching_key_is_returned_so_it_can_be_logged(self):
+        ok, key = authorize(client="10.0.0.9", token_supplied=TOKEN, keys=keys_for())
+        self.assertTrue(ok)
+        self.assertEqual(key["name"], "config-token")
+
+    def test_loopback_is_admitted_without_a_key(self):
+        ok, key = authorize(client="127.0.0.1", token_supplied=None, keys=keys_for())
+        self.assertTrue(ok)
+        self.assertIsNone(key)
 
 
 class ValidateServerConfigTests(unittest.TestCase):

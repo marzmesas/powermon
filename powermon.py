@@ -17,8 +17,11 @@ Power model
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import hmac
 import ipaddress
+import secrets
+import ssl
 import json
 import os
 import re
@@ -37,7 +40,8 @@ from urllib.parse import parse_qs, urlparse
 HERE = Path(__file__).resolve().parent
 DEFAULTS = {
     "server": {"host": "127.0.0.1", "port": 8787, "token": "",
-               "trusted_proxies": "", "require_token_always": False},
+               "trusted_proxies": "", "require_token_always": False,
+               "keys_file": "", "tls_cert": "", "tls_key": ""},
     "sampling": {"interval": 2.0, "raw_retention_days": 7, "gap_max_s": 60.0},
     "tariff": {"currency": "EUR", "symbol": "EUR", "mode": "flat",
                "rate": 0.15, "standing_charge_per_day": 0.0},
@@ -169,42 +173,157 @@ def effective_client(peer: str, forwarded_for: str | None, trusted: list) -> str
     return chain[0] if chain else peer
 
 
-def authorize(*, client: str, token_supplied: str | None, token_configured: str,
-              require_token_always: bool = False) -> bool:
-    """Loopback is exempt so `pwr` and SSH tunnels need no configuration.
+SCOPES = ("read", "admin")
 
-    Every other client must present the token. An unset token denies remote
-    access rather than granting it: no credential means no way in, not a way
-    in for everyone.
+
+def hash_token(token: str) -> str:
+    return "sha256:" + hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
+
+
+def load_keys(cfg: dict, base_dir: Path | None = None) -> list[dict]:
+    """Every credential that may open this server.
+
+    `server.token` stays supported as a one-key shorthand, because most
+    installs have exactly one client and should not need a key file to say so.
+    Additional named keys live in a JSON file so they can be revoked one at a
+    time, and are stored hashed: a leaked config should not be a leaked
+    credential.
+    """
+    server = cfg.get("server", {})
+    keys: list[dict] = []
+
+    token = str(server.get("token") or "")
+    if token:
+        keys.append({"name": "config-token", "scope": "admin",
+                     "hash": hash_token(token), "created": None})
+
+    path = str(server.get("keys_file") or "")
+    if path:
+        full = Path(os.path.expanduser(path))
+        if not full.is_absolute():
+            full = (base_dir or HERE) / full
+        try:
+            entries = json.loads(full.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return keys
+        for entry in entries if isinstance(entries, list) else []:
+            digest = str(entry.get("hash") or "")
+            if not digest:
+                continue
+            scope = str(entry.get("scope") or "read")
+            keys.append({"name": str(entry.get("name") or "unnamed"),
+                         "scope": scope if scope in SCOPES else "read",
+                         "hash": digest,
+                         "created": entry.get("created")})
+    return keys
+
+
+def match_key(supplied: str | None, keys: list[dict]) -> dict | None:
+    """The key this token belongs to, or None.
+
+    Every candidate is compared even after a match, so the time taken does not
+    reveal how far down the list the right key sits.
+    """
+    if not supplied or not keys:
+        return None
+    digest = hash_token(supplied)
+    found = None
+    for key in keys:
+        # compare_digest on the hashes: equal length, and no timing signal from
+        # the token itself.
+        if hmac.compare_digest(digest, str(key["hash"])) and found is None:
+            found = key
+    return found
+
+
+def authorize(*, client: str, token_supplied: str | None, keys: list[dict],
+              require_token_always: bool = False,
+              required_scope: str = "read") -> tuple[bool, dict | None]:
+    """Returns (allowed, the key that opened it).
+
+    Loopback is exempt so `pwr` and SSH tunnels need no configuration. Every
+    other client must present a key. No keys configured denies remote access
+    rather than granting it: no credential means no way in, not a way in for
+    everyone.
     """
     if is_loopback(client) and not require_token_always:
-        return True
-    if not token_configured or token_supplied is None:
-        return False
-    # Compare as bytes: compare_digest raises TypeError on non-ASCII str, which a
-    # hand-typed token in a URL could easily be.
-    return hmac.compare_digest(token_supplied.encode("utf-8", "replace"),
-                               token_configured.encode("utf-8", "replace"))
+        return True, None
+    key = match_key(token_supplied, keys)
+    if key is None:
+        return False, None
+    # admin implies read. No route requires admin yet -- every endpoint is
+    # read-only -- so this gate exists for the first one that does.
+    if required_scope == "admin" and key["scope"] != "admin":
+        return False, key
+    return True, key
+
+
+class Throttle:
+    """Delays repeated authentication failures from one address.
+
+    An 18-byte token is not guessable, but nothing stopped a client trying at
+    line speed, and a shorter hand-picked one might be. Successful requests are
+    never delayed, so this cannot lock out a client that has the right key.
+    """
+
+    def __init__(self, threshold: int = 5, base_delay: float = 1.0,
+                 max_delay: float = 30.0):
+        self.threshold = threshold
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self._fails: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def delay_for(self, client: str) -> float:
+        """Seconds this client should wait before its next attempt is answered."""
+        with self._lock:
+            fails = self._fails.get(client, 0)
+        if fails < self.threshold:
+            return 0.0
+        # Doubling, so a serious attempt slows to a crawl while a fat-fingered
+        # token costs a second.
+        return min(self.max_delay, self.base_delay * 2 ** (fails - self.threshold))
+
+    def record_failure(self, client: str) -> None:
+        with self._lock:
+            # Bounded, so a spray of forged source addresses cannot grow this
+            # without limit.
+            if len(self._fails) > 4096:
+                self._fails.clear()
+            self._fails[client] = self._fails.get(client, 0) + 1
+
+    def record_success(self, client: str) -> None:
+        with self._lock:
+            self._fails.pop(client, None)
 
 
 def validate_server_config(cfg: dict, cfg_path: Path | None = None) -> str | None:
     """Returns a fatal error message, or None when the configuration is safe."""
     server = cfg.get("server", {})
     host = str(server.get("host") or "")
-    token = str(server.get("token") or "")
     try:
         parse_trusted_proxies(server.get("trusted_proxies"))
     except ValueError as exc:
         return f"server.trusted_proxies: {exc}"
-    if token or is_loopback(host):
+
+    cert, key = str(server.get("tls_cert") or ""), str(server.get("tls_key") or "")
+    if bool(cert) != bool(key):
+        return ("server.tls_cert and server.tls_key must be set together; "
+                f"only {'tls_cert' if cert else 'tls_key'} is set.")
+    for label, path in (("tls_cert", cert), ("tls_key", key)):
+        if path and not Path(os.path.expanduser(path)).exists():
+            return f"server.{label}: {path} does not exist."
+
+    if load_keys(cfg, cfg_path.parent if cfg_path else None) or is_loopback(host):
         return None
     where = f" in {cfg_path}" if cfg_path else ""
     return (
         f"refusing to start: server.host is {host!r}, which accepts connections from "
-        f"other machines, but server.token is empty{where}.\n"
+        f"other machines, but no access key is configured{where}.\n"
         "  Anyone able to reach the port would have full access to your data.\n"
         "  Generate a token with:  python3 -c \"import secrets; "
         "print(secrets.token_urlsafe(18))\"\n"
+        "  or add a named key with:  ./powermon.py --add-key NAME\n"
         "  Or set host = \"127.0.0.1\" and reach it through an SSH tunnel."
     )
 
@@ -1247,6 +1366,9 @@ class Handler(BaseHTTPRequestHandler):
     store: Store
     cfg: dict
     trusted_proxies: list = []
+    keys: list = []
+    throttle: "Throttle" = None
+    tls: bool = False
 
     def log_message(self, fmt: str, *args) -> None:  # quiet by default
         if os.environ.get("POWERMON_ACCESS_LOG"):
@@ -1288,18 +1410,38 @@ class Handler(BaseHTTPRequestHandler):
                     supplied = val
                     break
 
+        if from_query:
+            # Deprecated: a URL token reaches browser history, proxy logs and
+            # Referer headers. Kept working, but say so.
+            print("powermon: ?token= is deprecated and will be removed; use the "
+                  "X-Powermon-Token header, or open the page once to set the cookie.",
+                  file=sys.stderr, flush=True)
+
         client = self._client()
-        allowed = authorize(
+        allowed, key = authorize(
             client=client,
             token_supplied=supplied,
-            token_configured=str(self.cfg["server"].get("token") or ""),
+            keys=self.keys,
             require_token_always=bool(self.cfg["server"].get("require_token_always")),
         )
+        if self.throttle:
+            if allowed:
+                self.throttle.record_success(client)
+            else:
+                # Only a failure waits. Delaying before the check would punish a
+                # correct key for someone else's guessing on the same address --
+                # which, behind an untrusted proxy, is every other client.
+                delay = self.throttle.delay_for(client)
+                self.throttle.record_failure(client)
+                if delay:
+                    time.sleep(delay)
         if not allowed:
             # The effective address, not just the peer: without it a proxy
             # misconfiguration is invisible.
             print(f"powermon: denied {self.command} {self.path} from {client}"
                   f" (peer {self.client_address[0]})", file=sys.stderr, flush=True)
+        elif key is not None:
+            self.matched_key = key
         return allowed, from_query
 
     DENIED = (b"<!doctype html><meta charset=utf-8><title>powermon</title>"
@@ -1336,9 +1478,13 @@ class Handler(BaseHTTPRequestHandler):
                 # the token stops appearing in the address bar afterwards.
                 cookie = []
                 if from_query:
+                    # Echo back what the client actually presented, which may be
+                    # a named key rather than server.token.
+                    supplied = (parse_qs(route.query).get("token") or [""])[0]
+                    secure = "; Secure" if self.tls else ""
                     cookie = [("Set-Cookie",
-                               f"powermon_token={self.cfg['server']['token']}; Max-Age=31536000; "
-                               "Path=/; SameSite=Lax; HttpOnly")]
+                               f"powermon_token={supplied}; Max-Age=31536000; "
+                               f"Path=/; SameSite=Lax; HttpOnly{secure}")]
                 self._send(200, page.read_bytes(), "text/html; charset=utf-8", extra=cookie)
             elif path == "/api/now":
                 self._json(now_payload(self.monitor, self.store, self.cfg))
@@ -1363,9 +1509,92 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
 
+def add_key(cfg: dict, cfg_path: Path, name: str, scope: str = "read") -> int:
+    """Mint a key, store only its hash, and print the token once."""
+    if scope not in SCOPES:
+        print(f"powermon: scope must be one of {', '.join(SCOPES)}", file=sys.stderr)
+        return 2
+    path = str(cfg["server"].get("keys_file") or "")
+    if not path:
+        path = "powermon-keys.json"
+        print(f"powermon: server.keys_file is not set; using {path}.\n"
+              f"          Add  keys_file = \"{path}\"  under [server] in {cfg_path}.",
+              file=sys.stderr)
+    full = Path(os.path.expanduser(path))
+    if not full.is_absolute():
+        full = cfg_path.parent / full
+    try:
+        entries = json.loads(full.read_text(encoding="utf-8"))
+        entries = entries if isinstance(entries, list) else []
+    except (OSError, ValueError):
+        entries = []
+    if any(e.get("name") == name for e in entries):
+        print(f"powermon: a key named {name!r} already exists; "
+              "revoke it first with --revoke-key.", file=sys.stderr)
+        return 2
+
+    token = secrets.token_urlsafe(24)
+    entries.append({"name": name, "scope": scope, "hash": hash_token(token),
+                    "created": datetime.now().strftime("%Y-%m-%d")})
+    full.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
+    try:
+        full.chmod(0o600)
+    except OSError:
+        pass
+    # Only chance to see it: the file holds a hash, by design.
+    print(f"key {name!r} ({scope}) added to {full}\n\n  {token}\n\n"
+          "That token is not stored and cannot be shown again. "
+          "Restart powermon to load it.")
+    return 0
+
+
+def revoke_key(cfg: dict, cfg_path: Path, name: str) -> int:
+    path = str(cfg["server"].get("keys_file") or "powermon-keys.json")
+    full = Path(os.path.expanduser(path))
+    if not full.is_absolute():
+        full = cfg_path.parent / full
+    try:
+        entries = json.loads(full.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print(f"powermon: no key file at {full}", file=sys.stderr)
+        return 2
+    remaining = [e for e in entries if e.get("name") != name]
+    if len(remaining) == len(entries):
+        print(f"powermon: no key named {name!r} in {full}", file=sys.stderr)
+        return 2
+    full.write_text(json.dumps(remaining, indent=2) + "\n", encoding="utf-8")
+    print(f"key {name!r} revoked. Restart powermon to apply.")
+    return 0
+
+
 def main() -> int:
-    cfg_path = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "config.toml"
+    args = sys.argv[1:]
+    # A config path may still be given positionally, as before.
+    flags = {a for a in args if a.startswith("--")}
+    positional = [a for a in args if not a.startswith("--")]
+
+    def flag_value(flag: str) -> str | None:
+        if flag in args:
+            index = args.index(flag)
+            return args[index + 1] if index + 1 < len(args) else None
+        return None
+
+    cfg_arg = next((p for p in positional if p.endswith(".toml")), None)
+    cfg_path = Path(cfg_arg) if cfg_arg else HERE / "config.toml"
     cfg = load_config(cfg_path)
+
+    if "--add-key" in flags:
+        name = flag_value("--add-key")
+        if not name:
+            print("powermon: --add-key needs a name", file=sys.stderr)
+            return 2
+        return add_key(cfg, cfg_path, name, flag_value("--scope") or "read")
+    if "--revoke-key" in flags:
+        name = flag_value("--revoke-key")
+        if not name:
+            print("powermon: --revoke-key needs a name", file=sys.stderr)
+            return 2
+        return revoke_key(cfg, cfg_path, name)
 
     # Before anything is opened, sampled or bound.
     fatal = validate_server_config(cfg, cfg_path)
@@ -1373,6 +1602,8 @@ def main() -> int:
         print(f"powermon: {fatal}", file=sys.stderr, flush=True)
         return 2
     Handler.trusted_proxies = parse_trusted_proxies(cfg["server"].get("trusted_proxies"))
+    Handler.keys = load_keys(cfg, cfg_path.parent)
+    Handler.throttle = Throttle()
 
     db_path = Path(os.path.expanduser(
         str(cfg["sampling"].get("db") or HERE / "powermon.db")))
@@ -1385,8 +1616,26 @@ def main() -> int:
     Handler.monitor, Handler.store, Handler.cfg = monitor, store, cfg
     host, port = cfg["server"]["host"], int(cfg["server"]["port"])
     httpd = ThreadingHTTPServer((host, port), Handler)
+
+    cert = str(cfg["server"].get("tls_cert") or "")
+    tls_key = str(cfg["server"].get("tls_key") or "")
+    scheme = "http"
+    if cert and tls_key:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        try:
+            context.load_cert_chain(os.path.expanduser(cert), os.path.expanduser(tls_key))
+        except (OSError, ssl.SSLError) as exc:
+            print(f"powermon: refusing to start: TLS certificate unusable: {exc}",
+                  file=sys.stderr, flush=True)
+            return 2
+        httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+        Handler.tls = True
+        scheme = "https"
+
     src = "RAPL (measured)" if monitor.cpu.source == "rapl" else "utilisation model (estimated)"
-    print(f"powermon: http://{host}:{port}  db={db_path}", flush=True)
+    named = [k["name"] for k in Handler.keys]
+    print(f"powermon: {scheme}://{host}:{port}  db={db_path}"
+          + (f"  keys: {', '.join(named)}" if named else "  (loopback only)"), flush=True)
     gpu_src = f" via {monitor.gpu.source}" if monitor.gpu.enabled else ""
     print(f"powermon: CPU power from {src}; "
           f"GPU: {monitor.gpu.name or 'none detected'}{gpu_src}", flush=True)

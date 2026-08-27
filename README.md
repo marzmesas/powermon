@@ -40,6 +40,10 @@ and without RAPL (CPU power falls back to a utilisation model).
 wall_watts = (cpu_watts + gpu_watts + baseline_watts) / psu_efficiency
 ```
 
+…unless a real meter is configured, in which case the wall figure is measured
+directly and the table below only decides how it is attributed. See
+[using a real meter](#using-a-real-meter-recommended-if-you-have-one).
+
 | Component | Source | Trust |
 |---|---|---|
 | GPU watts | every card's own sensor, summed, via NVML (`nvidia-smi` if the library is missing) | **measured**, accurate |
@@ -81,6 +85,45 @@ you ever rebuild this machine, re-run:
 ```sh
 sudo loginctl enable-linger marzmesas
 ```
+
+### Using a real meter (recommended if you have one)
+
+Everything above is a model. If a UPS, smart plug or metered PDU already
+measures this machine, point powermon at it and the headline number becomes a
+**measurement** — the model then only decides how to split that total between
+CPU, GPU and the rest.
+
+```toml
+[meter]
+type = "http"
+http_url = "http://plug/cm?cmnd=Status%2010"
+http_json_path = "StatusSNS.ENERGY.Power"
+```
+
+| Device | `http_url` | `http_json_path` |
+|---|---|---|
+| Tasmota | `http://plug/cm?cmnd=Status%2010` | `StatusSNS.ENERGY.Power` |
+| Shelly gen1 | `http://plug/status` | `meters.0.power` |
+| Shelly gen2 | `http://plug/rpc/Switch.GetStatus?id=0` | `apower` |
+| Home Assistant | `http://ha:8123/api/states/sensor.rack_power` | `state` |
+| UPS via NUT | `type = "nut"` | `ups.realpower`, else load × nominal |
+
+Home Assistant needs `http_headers = "Authorization: Bearer YOUR_TOKEN"`, which
+makes any energy entity it already knows about usable here — including meters
+powermon has no driver for.
+
+`power.residual_w` then reports meter minus model, in watts. That is exactly
+what `baseline_w` and `psu_efficiency` are getting wrong, so you can tune them
+until it approaches zero without owning a second meter.
+
+**One caveat:** the meter measures whatever is plugged into it. If your UPS
+feeds the whole rack, powermon will report the whole rack as this machine.
+Use a per-outlet reading, or a plug that only this machine is on.
+
+If the meter stops answering, powermon falls back to the model and says so
+rather than reporting a gap — `power.wall_source` flips to `model` and a
+warning appears on the dashboard. A dead meter is retried occasionally rather
+than on every sample, so it costs nothing while it is down.
 
 ### Calibrating against reality
 

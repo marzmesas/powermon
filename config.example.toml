@@ -69,6 +69,33 @@ curve_exp = 1.25
 [gpu]
 enabled = true
 
+[meter]
+# A real wall meter, if you have one. With it, the headline number is measured
+# rather than modelled, and baseline_w / psu_efficiency stop being guesses:
+# power.residual_w reports how far the model was off, so you can tune them.
+# Without it, nothing changes -- the model is used, as before.
+type = "none"              # none | http | nut
+timeout = 1.0              # seconds; must be well under sampling.interval
+
+# --- type = "http": any device reporting power as JSON ---
+#   Tasmota      http://plug/cm?cmnd=Status%2010        StatusSNS.ENERGY.Power
+#   Shelly gen1  http://plug/status                     meters.0.power
+#   Shelly gen2  http://plug/rpc/Switch.GetStatus?id=0  apower
+#   Home Assist. http://ha:8123/api/states/sensor.rack_power    state
+#                with http_headers = "Authorization: Bearer YOUR_TOKEN"
+http_url = ""
+http_json_path = ""        # dot path into the JSON, list indices allowed
+http_headers = ""          # "Name: value", several separated by |
+http_scale = 1.0           # 1000 if the device reports kW
+
+# --- type = "nut": Network UPS Tools ---
+# Uses ups.realpower when the UPS reports it, otherwise ups.load x
+# ups.realpower.nominal, which is cruder but still measured.
+nut_host = "127.0.0.1"
+nut_port = 3493
+nut_ups = "ups"
+nut_var = "ups.realpower"
+
 [activity]
 # A sample counts as "training" (busy) when the GPU is doing real work.
 # Lets the dashboard split cost into work vs idle-but-powered-on.

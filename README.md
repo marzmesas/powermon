@@ -134,12 +134,61 @@ present it, as `?token=…`, an `X-Powermon-Token` header, or the `powermon_toke
 cookie. Open the URL with `?token=…` once and the cookie is set for a year, so
 the token stops showing up in the address bar.
 
+**Named keys.** One shared token cannot be withdrawn from a single client. Add
+keys instead, and revoke them one at a time:
+
+```sh
+./powermon.py --add-key grafana --scope read    # prints the token once
+./powermon.py --add-key laptop  --scope admin
+./powermon.py --revoke-key grafana
+systemctl --user restart powermon               # keys load at startup
+```
+
+They are stored hashed in `server.keys_file`, so that file is not itself a
+credential, and the token is shown once because it is never kept. `server.token`
+still works alongside them as a one-key shorthand. Every current route is
+read-only, so `admin` grants nothing extra today — it exists for the first route
+that changes something.
+
+Repeated wrong keys from one address are slowed: five free attempts, then a
+delay doubling to 30 s. A correct key is never delayed, even from an address
+that has been guessing, so one bad client cannot lock out the rest.
+
+**TLS.** Set `server.tls_cert` and `server.tls_key` to serve HTTPS directly. A
+self-signed certificate is fine on a tailnet:
+
+```sh
+openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+  -keyout key.pem -out cert.pem -subj "/CN=$(hostname)"
+```
+
 **Behind a reverse proxy:** Caddy, nginx and Traefik connect from this machine,
 so without configuration every request they forward would look like loopback and
 skip the token. Set `server.trusted_proxies` to the proxy's address and its
 `X-Forwarded-For` header is used instead — from anything not listed there, the
 header is ignored, so it cannot be spoofed. `server.require_token_always = true`
 removes the loopback exemption entirely.
+
+With `trusted_proxies = "127.0.0.1"` set, and powermon left on loopback:
+
+```caddyfile
+# Caddy: real certificate, powermon never exposed directly
+powermon.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+```nginx
+# nginx: X-Forwarded-For is what powermon reads, so it must be set
+location / {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+Caddy sets `X-Forwarded-For` by default; nginx does not, so the line above is
+required. Without it every proxied request arrives as bare loopback and skips
+the token.
 
 ### Tailscale (recommended)
 

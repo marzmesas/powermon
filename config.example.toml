@@ -24,6 +24,20 @@ trusted_proxies = ""
 # present the token. Off by default.
 require_token_always = false
 
+# Named keys, so a client can be revoked without breaking every other one.
+# Stored hashed, so this file is not itself a credential.
+#   ./powermon.py --add-key grafana --scope read     (prints the token once)
+#   ./powermon.py --revoke-key grafana
+# `token` above keeps working alongside these as a one-key shorthand.
+keys_file = ""
+
+# Serve HTTPS directly, for setups without a reverse proxy in front.
+# Both must be set together. Self-signed is fine on a tailnet:
+#   openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+#     -keyout key.pem -out cert.pem -subj "/CN=your-host"
+tls_cert = ""
+tls_key = ""
+
 [sampling]
 interval = 2.0             # seconds between samples
 raw_retention_days = 7     # raw 2s samples kept this long; hourly totals are kept forever

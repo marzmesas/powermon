@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 import socket
+import urllib.request
 import sqlite3
 import subprocess
 import sys
@@ -48,6 +49,10 @@ DEFAULTS = {
     "power": {"psu_efficiency": 0.90, "baseline_w": 35.0},
     "cpu": {"rapl_scale": 1.0, "idle_w": 30.0, "max_w": 142.0, "curve_exp": 1.25},
     "gpu": {"enabled": True},
+    "meter": {"type": "none", "timeout": 1.0,
+              "http_url": "", "http_json_path": "", "http_headers": "", "http_scale": 1.0,
+              "nut_host": "127.0.0.1", "nut_port": 3493, "nut_ups": "ups",
+              "nut_var": "ups.realpower"},
     "activity": {"busy_gpu_util": 15.0, "busy_gpu_power_w": 80.0},
 }
 
@@ -812,6 +817,181 @@ def _num(text: str) -> float | None:
         return None
 
 
+# --------------------------------------------------------------------------- wall meters
+#
+# A real meter turns the headline number from an estimate into a measurement,
+# and demotes baseline_w and psu_efficiency from assumptions to a residual that
+# can be reported. Homelabs usually already own one: a UPS, a smart plug, or a
+# metered PDU.
+#
+# Every provider returns watts or None. None means "could not read", never zero,
+# and the caller falls back to the model rather than inventing a number.
+
+
+def dig(data, path: str):
+    """Value at a dotted path: "a.b.0.c". Returns None if any step is missing."""
+    if not path:
+        return data
+    current = data
+    for part in path.split("."):
+        if isinstance(current, dict):
+            if part not in current:
+                return None
+            current = current[part]
+        elif isinstance(current, (list, tuple)):
+            try:
+                current = current[int(part)]
+            except (ValueError, IndexError):
+                return None
+        else:
+            return None
+    return current
+
+
+class HttpMeter:
+    """Any device that reports power as JSON over HTTP.
+
+    One provider covers the three things a homelab is likely to have, because
+    they differ only in URL and where the number sits:
+
+      Tasmota     /cm?cmnd=Status%2010      StatusSNS.ENERGY.Power
+      Shelly gen1 /status                   meters.0.power
+      Shelly gen2 /rpc/Switch.GetStatus?id=0  apower
+      Home Asst.  /api/states/sensor.x      state   (plus a bearer header)
+    """
+
+    def __init__(self, url: str, json_path: str, headers: str = "",
+                 scale: float = 1.0, timeout: float = 1.0, opener=None):
+        self.url = url
+        self.json_path = json_path
+        self.scale = scale
+        self.timeout = timeout
+        self.headers = {}
+        for part in (headers or "").split("|"):
+            name, sep, value = part.partition(":")
+            if sep and name.strip():
+                self.headers[name.strip()] = value.strip()
+        self._opener = opener or urllib.request.urlopen
+
+    def read(self) -> float | None:
+        request = urllib.request.Request(self.url, headers=self.headers)
+        try:
+            with self._opener(request, timeout=self.timeout) as response:
+                payload = json.loads(response.read().decode("utf-8", "replace"))
+        except Exception:
+            # Any transport or parse failure is an unknown reading, not a fault
+            # worth killing the sampler over.
+            return None
+        # Home Assistant reports "123.4" as a string, hence _num rather than float.
+        watts = _num(dig(payload, self.json_path))
+        return watts * self.scale if watts is not None else None
+
+
+class NutMeter:
+    """Network UPS Tools, the most common meter in a homelab with a rack.
+
+    Prefers ups.realpower. Most consumer UPSs do not report it, so the fallback
+    is load percentage against the nominal rating -- cruder, but still a
+    measurement of the whole load rather than a guess about this machine.
+    """
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 3493, ups: str = "ups",
+                 var: str = "ups.realpower", timeout: float = 1.0, connect=None):
+        self.host, self.port, self.ups, self.var = host, port, ups, var
+        self.timeout = timeout
+        self._connect = connect or self._tcp
+
+    def _tcp(self):
+        return socket.create_connection((self.host, self.port), timeout=self.timeout)
+
+    @staticmethod
+    def _parse(line: str) -> float | None:
+        # VAR ups ups.realpower "123.4"
+        if not line.startswith("VAR "):
+            return None
+        _, _, rest = line.partition('"')
+        return _num(rest.rpartition('"')[0]) if '"' in line else None
+
+    def read(self) -> float | None:
+        try:
+            with self._connect() as sock:
+                sock.settimeout(self.timeout)
+                reader = sock.makefile("rw", encoding="utf-8", newline="\n")
+
+                def ask(var: str) -> float | None:
+                    reader.write(f"GET VAR {self.ups} {var}\n")
+                    reader.flush()
+                    return self._parse(reader.readline().strip())
+
+                watts = ask(self.var)
+                if watts is None:
+                    # Fall back to load% x nominal rating.
+                    load = ask("ups.load")
+                    nominal = ask("ups.realpower.nominal")
+                    if load is not None and nominal is not None:
+                        watts = load / 100.0 * nominal
+                reader.write("LOGOUT\n")
+                reader.flush()
+                return watts
+        except Exception:
+            return None
+
+
+def build_meter(cfg: dict):
+    """The configured meter, or None when there is none."""
+    meter = cfg.get("meter", {})
+    kind = str(meter.get("type") or "none").strip().lower()
+    timeout = float(meter.get("timeout") or 1.0)
+    if kind in ("", "none"):
+        return None
+    if kind == "http":
+        url = str(meter.get("http_url") or "")
+        if not url:
+            return None
+        return HttpMeter(url, str(meter.get("http_json_path") or ""),
+                         str(meter.get("http_headers") or ""),
+                         float(meter.get("http_scale") or 1.0), timeout)
+    if kind == "nut":
+        return NutMeter(str(meter.get("nut_host") or "127.0.0.1"),
+                        int(float(meter.get("nut_port") or 3493)),
+                        str(meter.get("nut_ups") or "ups"),
+                        str(meter.get("nut_var") or "ups.realpower"), timeout)
+    return None
+
+
+class MeterPoller:
+    """Wraps a provider so a slow or dead meter cannot stall the sampler.
+
+    After repeated failures it is tried less often: a meter that is switched
+    off should not cost a timeout on every sample.
+    """
+
+    def __init__(self, meter, max_failures: int = 3, retry_every: int = 30):
+        self.meter = meter
+        self.max_failures = max_failures
+        self.retry_every = retry_every
+        self.failures = 0
+        self._skip = 0
+        self.last_error = False
+
+    def read(self) -> float | None:
+        if self.meter is None:
+            return None
+        if self._skip > 0:
+            self._skip -= 1
+            return None
+        watts = self.meter.read()
+        if watts is None or watts < 0:
+            self.failures += 1
+            self.last_error = True
+            if self.failures >= self.max_failures:
+                self._skip = self.retry_every
+            return None
+        self.failures = 0
+        self.last_error = False
+        return watts
+
+
 def read_mem() -> dict:
     info = {}
     try:
@@ -992,6 +1172,7 @@ class Monitor:
         self.store = store
         self.cpu = CpuReader(cfg)
         self.gpu = GpuReader(cfg)
+        self.meter = MeterPoller(build_meter(cfg))
         self.net = NetReader()
         self.latest: dict = {}
         self.recent: list[dict] = []       # in-memory ring for sparklines
@@ -1019,7 +1200,16 @@ class Monitor:
         gpu_w = float(raw_gpu_w) if raw_gpu_w is not None else 0.0
         eff = max(0.5, min(1.0, float(self.cfg["power"]["psu_efficiency"])))
         dc = cpu_w + gpu_w + float(self.cfg["power"]["baseline_w"])
-        total_w = dc / eff
+        modelled_w = dc / eff
+
+        # A meter measures the wall directly, so it wins. The model is then only
+        # deciding how to attribute that total between components, and the gap
+        # between the two is a calibration residual worth reporting rather than
+        # an error worth hiding.
+        meter_w = self.meter.read()
+        wall_source = "meter" if meter_w is not None else "model"
+        total_w = meter_w if meter_w is not None else modelled_w
+        residual_w = (meter_w - modelled_w) if meter_w is not None else None
         other_w = max(0.0, total_w - cpu_w - gpu_w)
 
         act = self.cfg["activity"]
@@ -1066,6 +1256,8 @@ class Monitor:
         detail = dict(row)
         detail.update({"total_w": total_w, "gpu_w": gpu_w, "other_w": other_w,
                        "partial": not gpu_known,
+                       "wall_source": wall_source, "meter_w": meter_w,
+                       "modelled_w": modelled_w, "residual_w": residual_w,
                        "gpu": gpu, "mem": mem, "net": self.net.sample(now),
                        "load": loadavg(), "cpu_freq": self.cpu.freq_mhz(),
                        "disk": self._disk(), "cpu_power_source": self.cpu.source})
@@ -1288,6 +1480,11 @@ def health(monitor: Monitor, period_totals: dict, cfg: dict,
         issues.append({"level": "warn", "code": "partial_coverage",
                        "message": f"{100 * (1 - coverage):.1f}% of today was not measured; "
                                   "energy and cost below are an undercount."})
+    wall_source = monitor.latest.get("wall_source", "model")
+    if monitor.meter.meter is not None and wall_source != "meter":
+        issues.append({"level": "warn", "code": "meter_unreadable",
+                       "message": "The wall meter is configured but not responding; "
+                                  "power is modelled instead."})
     if monitor.cpu.source != "rapl":
         issues.append({"level": "info", "code": "cpu_estimated",
                        "message": "CPU power is modelled from utilisation, not measured "
@@ -1298,6 +1495,8 @@ def health(monitor: Monitor, period_totals: dict, cfg: dict,
         "coverage_today": coverage,
         "cpu_source": monitor.cpu.source,
         "gpu_source": monitor.gpu.source if monitor.gpu.enabled else None,
+        "wall_source": wall_source,
+        "residual_w": monitor.latest.get("residual_w"),
         "cpu_packages": monitor.cpu.packages,
         "gpu_count": monitor.latest.get("gpu", {}).get("count", 0),
         "issues": issues,
@@ -1328,7 +1527,15 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
                   "source": latest.get("cpu_power_source", "estimated"),
                   # True when a meter failed this sample: the total is missing
                   # that component and no energy was recorded for the interval.
-                  "partial": bool(latest.get("partial", False))},
+                  "partial": bool(latest.get("partial", False)),
+                  # "meter" = total_w is measured at the wall; "model" = it is
+                  # derived from components plus configured constants.
+                  "wall_source": latest.get("wall_source", "model"),
+                  "meter_w": latest.get("meter_w"),
+                  "modelled_w": latest.get("modelled_w"),
+                  # meter minus model: what the configured baseline and PSU
+                  # efficiency are getting wrong, in watts.
+                  "residual_w": latest.get("residual_w")},
         "cpu": {"pct": latest["cpu_pct"], "temp": latest["cpu_temp"],
                 "freq_mhz": latest.get("cpu_freq"), "load": latest.get("load"),
                 "cores": monitor.cpu.ncpu, "max_w": float(cfg["cpu"]["max_w"])},

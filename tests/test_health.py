@@ -31,13 +31,22 @@ class FakeGpu:
         self.source = source
 
 
+class FakeMeter:
+    """Mirrors MeterPoller: .meter is None when none is configured."""
+
+    def __init__(self, configured=False):
+        self.meter = object() if configured else None
+
+
 class FakeMonitor:
     def __init__(self, age=1.0, gpu_error=False, cpu_source="rapl", count=1,
-                 gpu_enabled=True):
+                 gpu_enabled=True, meter=False, wall_source="model"):
         self.latest = {"ts": time.time() - age,
-                       "gpu": {"error": gpu_error, "count": count}}
+                       "gpu": {"error": gpu_error, "count": count},
+                       "wall_source": wall_source}
         self.cpu = FakeCpu(cpu_source)
         self.gpu = FakeGpu(gpu_enabled)
+        self.meter = FakeMeter(meter)
 
 
 def totals(coverage=1.0):
@@ -122,6 +131,23 @@ class HealthTests(unittest.TestCase):
     def test_a_gpuless_host_reports_no_gpu_source(self):
         monitor = FakeMonitor(gpu_enabled=False, count=0)
         self.assertIsNone(health(monitor, totals(), CFG)["gpu_source"])
+
+    def test_a_configured_meter_that_stops_answering_is_reported(self):
+        """Silently falling back to the model would hide a real downgrade."""
+        result = health(FakeMonitor(meter=True, wall_source="model"), totals(), CFG)
+
+        self.assertIn("meter_unreadable", codes(result))
+        self.assertTrue(result["ok"], "the model is still a valid reading")
+
+    def test_a_working_meter_says_nothing_and_reports_its_source(self):
+        result = health(FakeMonitor(meter=True, wall_source="meter"), totals(), CFG)
+
+        self.assertNotIn("meter_unreadable", codes(result))
+        self.assertEqual(result["wall_source"], "meter")
+
+    def test_no_meter_configured_is_not_a_complaint(self):
+        result = health(FakeMonitor(meter=False), totals(), CFG)
+        self.assertNotIn("meter_unreadable", codes(result))
 
     def test_a_host_that_has_never_sampled_is_not_ok(self):
         monitor = FakeMonitor()

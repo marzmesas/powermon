@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is what the reference box runs, and it has no tomllib, so the
+        # fallback config parser is only exercised there. The newest version
+        # catches deprecations early.
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # No pip install step on purpose: the daemon is standard library only,
+      # and this job failing on a missing dependency is the signal that
+      # something crept in.
+      - name: Tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Byte-compile every entry point
+        run: python -m compileall -q powermon.py pwr tests
+
+      - name: Example config parses through both TOML paths
+        run: |
+          python - <<'PY'
+          import pathlib, powermon
+          path = pathlib.Path("config.example.toml")
+          # tomllib on 3.11+, the bundled subset parser on 3.10.
+          cfg = powermon.load_config(path)
+          assert cfg["server"]["host"] == "127.0.0.1", cfg["server"]
+          assert cfg["tariff"]["rate"] == 0.15, cfg["tariff"]
+          assert powermon.validate_server_config(cfg) is None
+          # And the subset parser directly, on every version.
+          subset = powermon._parse_toml_subset(path.read_text())
+          assert subset["server"]["host"] == "127.0.0.1", subset["server"]
+          assert subset["meter"]["type"] == "none", subset["meter"]
+          print("config parses on", __import__("sys").version.split()[0])
+          PY
+
+      - name: Shipped default refuses to expose itself
+        run: |
+          python - <<'PY'
+          import powermon
+          # The P0 regression, asserted against the real default rather than a
+          # fixture: opening the bind address without a key must be fatal.
+          cfg = powermon.load_config(__import__("pathlib").Path("config.example.toml"))
+          cfg["server"]["host"] = "0.0.0.0"
+          assert powermon.validate_server_config(cfg) is not None, "exposed with no key was allowed"
+          cfg["server"]["token"] = "x"
+          assert powermon.validate_server_config(cfg) is None
+          print("startup refusal holds")
+          PY
+
+  macos:
+    name: macOS menu bar app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: Generate the project
+        working-directory: macos
+        run: xcodegen generate
+      - name: Build and test
+        working-directory: macos
+        # No signing overrides: project.yml already ad-hoc signs, which is what
+        # a machine with no Developer ID does locally. CI should exercise the
+        # same path rather than a special one.
+        run: |
+          xcodebuild -project PowermonMenuBar.xcodeproj \
+            -scheme Powermon -configuration Debug test

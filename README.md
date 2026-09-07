@@ -34,6 +34,29 @@ sudo loginctl enable-linger "$USER"    # so it survives logout and starts at boo
 Open <http://localhost:8787>. Works without a GPU (GPU panels hide themselves)
 and without RAPL (CPU power falls back to a utilisation model).
 
+## What is supported
+
+Only the first row has been run on real hardware; the rest is what the code
+paths imply, marked as such rather than claimed.
+
+| Host | Wall power | Verified |
+|---|---|---|
+| Linux + NVIDIA + readable RAPL | measured GPU, measured CPU, modelled rest | **yes** — Ryzen 9 3900X + RTX 3090, Ubuntu 22.04 |
+| Linux + NVIDIA, no RAPL | measured GPU, **estimated** CPU (±20 W), modelled rest | **yes** — same box without the udev rule |
+| Linux, no GPU | estimated or measured CPU, modelled rest | **yes** — same box with `nvidia-smi` hidden |
+| Any host with a `[meter]` | **measured at the wall**, model only attributes it | **yes** — against a simulated plug |
+| Multi-GPU / multi-socket Linux | summed across devices | code paths tested, no such hardware to hand |
+| AMD or Intel GPU | not read; treated as no GPU | not implemented |
+| NVIDIA MIG | reports the physical card; per-instance not attributed | untested, no MIG card to hand |
+| macOS, Windows, *BSD | not supported as a *host* (the menu bar app is a client) | — |
+
+Python 3.10 or newer, standard library only. `nvidia-smi` is optional — NVML is
+used when present and is what the daemon prefers.
+
+Without a `[meter]`, the wall figure is an **estimate**: the GPU and CPU terms
+are real sensors, but `baseline_w` and `psu_efficiency` are configured
+constants. On a host with no GPU and no readable RAPL, every term is modelled.
+
 ## Where the numbers come from
 
 ```
@@ -369,5 +392,8 @@ service, and systemd restarts the process if it ever does die.
 | `pwr` | terminal client (symlinked into `~/.local/bin`) |
 | `config.toml` | all settings |
 | `90-rapl-readable.rules` | optional udev rule for measured CPU power |
-| `tests/` | access-control regression tests — `python3 -m unittest discover -s tests`, standard library only |
+| `tests/` | regression tests — `python3 -m unittest discover -s tests`, standard library only |
+| `CHANGELOG.md` | what changed per release |
+| `CONTRIBUTING.md` | how to run the tests, and the two constraints to know first |
+| `LICENSE` | MIT |
 | `systemd/powermon.service` | unit, installed to `~/.config/systemd/user/` |

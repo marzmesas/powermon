@@ -8,10 +8,14 @@ Power model
 -----------
   wall_w = (cpu_w + gpu_w + baseline_w) / psu_efficiency
 
-  cpu_w  measured from the RAPL package energy counter when readable, otherwise
-         estimated from utilisation (flagged as "estimated" everywhere).
-  gpu_w  measured by nvidia-smi (real on-board sensor).
+  cpu_w  measured from the RAPL package energy counters when readable (all
+         packages summed), otherwise estimated from utilisation (flagged as
+         "estimated" everywhere).
+  gpu_w  measured by every card's own sensor, via NVML.
   baseline_w  configured constant for board/RAM/NVMe/fans.
+
+...unless [meter] names a real wall meter, in which case wall_w is measured
+directly and the model above only attributes that total between components.
 """
 
 from __future__ import annotations
@@ -37,6 +41,8 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+__version__ = "0.1.0"
 
 HERE = Path(__file__).resolve().parent
 DEFAULTS = {
@@ -1560,7 +1566,10 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
                  "psu_efficiency": float(cfg["power"]["psu_efficiency"]),
                  "interval": float(cfg["sampling"]["interval"]),
                  "host": socket.gethostname(), "uptime_s": uptime_s(),
-                 "standing_charge_per_day": float(tariff.get("standing_charge_per_day", 0.0) or 0.0)},
+                 "standing_charge_per_day": float(tariff.get("standing_charge_per_day", 0.0) or 0.0),
+                 # So a client can tell what it is talking to before relying on
+                 # a field that may not exist in an older daemon.
+                 "version": __version__},
     }
 
 

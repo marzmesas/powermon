@@ -21,8 +21,8 @@ jobs:
         # catches deprecations early.
         python: ["3.10", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
 
@@ -70,7 +70,7 @@ jobs:
     name: macOS menu bar app
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install xcodegen
         run: brew install xcodegen
       - name: Generate the project

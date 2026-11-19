@@ -60,6 +60,8 @@ DEFAULTS = {
               "nut_host": "127.0.0.1", "nut_port": 3493, "nut_ups": "ups",
               "nut_var": "ups.realpower"},
     "activity": {"busy_gpu_util": 15.0, "busy_gpu_power_w": 80.0},
+    # idle_w = 0 turns alerting off: a sensible threshold depends on the box.
+    "alerts": {"idle_w": 0.0, "after_min": 10.0, "remind_min": 60.0, "ntfy_url": ""},
 }
 
 
@@ -1169,6 +1171,88 @@ class Store:
             return self.db.execute(sql, args).fetchall()
 
 
+# --------------------------------------------------------------------------- alerts
+
+
+def ntfy_send(url: str, title: str, body: str, priority: str, tags: str) -> None:
+    """POST one message to an ntfy topic, off the sampler thread.
+
+    A failed push is logged and dropped: the alert state is still in /api/now,
+    and a retry queue would be more machinery than a notification deserves.
+    """
+    def post() -> None:
+        try:
+            request = urllib.request.Request(
+                url, data=body.encode(), method="POST",
+                headers={"Title": title, "Priority": priority, "Tags": tags})
+            urllib.request.urlopen(request, timeout=5).close()
+        except Exception as exc:
+            print(f"powermon: alert push failed: {exc!r}", file=sys.stderr, flush=True)
+    threading.Thread(target=post, daemon=True).start()
+
+
+class IdleAlert:
+    """Notices the box drawing real power while the GPU is doing nothing.
+
+    One push when the draw has stayed above `idle_w` for `after_min`, one urgent
+    reminder at `remind_min`, one when it clears. Nothing else, so a stuck
+    process cannot turn into a stream of notifications.
+    """
+    CLEAR_S = 60.0   # below the threshold this long before the episode is over
+
+    def __init__(self, cfg: dict, send=ntfy_send):
+        alerts = cfg["alerts"]
+        self.idle_w = float(alerts["idle_w"])
+        self.after_s = float(alerts["after_min"]) * 60.0
+        self.remind_s = float(alerts["remind_min"]) * 60.0
+        url = str(alerts["ntfy_url"]).strip()
+        # urlopen would happily read file:// too.
+        self.url = url if url.startswith(("http://", "https://")) else ""
+        self._send = send
+        self._host = socket.gethostname()
+        self._over_since: float | None = None
+        self._under_since: float | None = None
+        self._alerted = False
+        self._reminded = False
+
+    def observe(self, now: float, total_w: float | None, busy: bool, detail: str = "") -> dict:
+        """Feed one sample; returns the state published in /api/now."""
+        over = self.idle_w > 0 and not busy and total_w is not None and total_w > self.idle_w
+        if over:
+            self._under_since = None
+            if self._over_since is None:
+                self._over_since = now
+            minutes = (now - self._over_since) / 60.0
+            if not self._alerted and now - self._over_since >= self.after_s:
+                self._alerted = True
+                self._push(f"{self._host} idle at {total_w:.0f} W",
+                           f"GPU idle, but the wall draw has been above {self.idle_w:.0f} W "
+                           f"for {minutes:.0f} min. {detail}", "default", "warning")
+            elif (self._alerted and not self._reminded and self.remind_s > 0
+                  and now - self._over_since >= self.remind_s):
+                self._reminded = True
+                self._push(f"{self._host} still idle at {total_w:.0f} W",
+                           f"Above {self.idle_w:.0f} W with the GPU idle for {minutes:.0f} min. "
+                           f"{detail}", "urgent", "rotating_light")
+        elif self._over_since is not None:
+            if self._under_since is None:
+                self._under_since = now
+            if now - self._under_since >= self.CLEAR_S:
+                if self._alerted:
+                    minutes = (self._under_since - self._over_since) / 60.0
+                    watts = f"{total_w:.0f} W" if total_w is not None else "normal"
+                    self._push(f"{self._host} back to {watts}",
+                               f"Idle draw was above {self.idle_w:.0f} W for {minutes:.0f} min.",
+                               "low", "white_check_mark")
+                self._over_since = self._under_since = None
+                self._alerted = self._reminded = False
+        return {"active": self._alerted, "since": self._over_since if self._alerted else None}
+
+    def _push(self, title: str, body: str, priority: str, tags: str) -> None:
+        if self.url:
+            self._send(self.url, f"powermon: {title}", body.strip(), priority, tags)
+
+
 # --------------------------------------------------------------------------- sampler
 
 
@@ -1179,6 +1263,7 @@ class Monitor:
         self.cpu = CpuReader(cfg)
         self.gpu = GpuReader(cfg)
         self.meter = MeterPoller(build_meter(cfg))
+        self.alert = IdleAlert(cfg)
         self.net = NetReader()
         self.latest: dict = {}
         self.recent: list[dict] = []       # in-memory ring for sparklines
@@ -1260,6 +1345,9 @@ class Monitor:
         # and the existing gpu.error flag are how a client knows the total is
         # missing its GPU term.
         detail = dict(row)
+        detail["alert"] = self.alert.observe(
+            now, total_w if gpu_known else None, busy,
+            f"CPU {util:.0f} %, GPU {row['gpu_util']:.0f} %.")
         detail.update({"total_w": total_w, "gpu_w": gpu_w, "other_w": other_w,
                        "partial": not gpu_known,
                        "wall_source": wall_source, "meter_w": meter_w,
@@ -1555,6 +1643,7 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
                 "count": gpu.get("count", 0), "devices": gpu.get("devices", [])},
         "mem": latest.get("mem", {}), "disk": latest.get("disk", {}),
         "net": latest.get("net", {}), "busy": bool(latest["busy"]),
+        "alert": latest.get("alert") or {"active": False, "since": None},
         "totals": period_totals,
         "health": health(monitor, period_totals, cfg),
         "session": {"wh": monitor.session_wh, "cost": monitor.session_wh / 1000.0 * rate,

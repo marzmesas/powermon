@@ -7,8 +7,7 @@ struct MenuBarLabel: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            // The mascot, tinted with the state colour the dot used to carry.
-            Image(nsImage: WatcherGlyph.image(color: NSColor(dotColor)))
+            Image(nsImage: glyph)
             Text(title)
                 // Mandatory: without monospaced digits the item changes width on
                 // every update and shoves neighbouring menu bar items around.
@@ -16,14 +15,24 @@ struct MenuBarLabel: View {
         }
     }
 
-    private var dotColor: Color {
+    /// The mascot. Idle is the menu bar's own text colour; a colour means
+    /// something is happening: blue training, yellow alert, red unreachable.
+    private var glyph: NSImage {
         switch poller.state {
-        case .live:           return poller.snapshot?.busy == true ? Palette.gpu : Palette.muted
-        case .stale:          return Palette.muted.opacity(0.5)
-        case .samplerStalled: return Palette.warning
-        case .connecting:     return Palette.muted
-        case .unreachable, .unauthorized: return Palette.critical
+        case .live:
+            if poller.snapshot?.alert?.active == true { return tinted(Palette.warning) }
+            return poller.snapshot?.busy == true ? tinted(Palette.gpu) : WatcherGlyph.image(color: nil)
+        case .stale, .connecting:
+            return WatcherGlyph.image(color: nil, opacity: 0.5)
+        case .samplerStalled:
+            return tinted(Palette.warning)
+        case .unreachable, .unauthorized:
+            return tinted(Palette.critical)
         }
+    }
+
+    private func tinted(_ color: Color) -> NSImage {
+        WatcherGlyph.image(color: NSColor(color))
     }
 
     private var title: String {

@@ -4,6 +4,15 @@ Notable changes per release. Dates are the release date; the project follows
 [semantic versioning](https://semver.org), with 0.x meaning the JSON API may
 still change shape between minor versions.
 
+## Unreleased
+
+- **Idle-draw alerts.** A new `[alerts]` section pushes to an ntfy topic when the
+  machine stays above `idle_w` with the GPU idle, reminds once if it persists,
+  and reports when it clears. `/api/now` gains `alert.active` and `alert.since`.
+  Off by default.
+- The menu bar app has a mascot for an icon and shows it in the menu bar, tinted
+  with the connection state, and yellow while an alert is active.
+
 ## 0.1.0 — 2026-09-07
 
 First versioned release. Everything before this was unversioned development.

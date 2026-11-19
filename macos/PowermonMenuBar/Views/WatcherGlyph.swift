@@ -3,14 +3,17 @@ import AppKit
 /// The app icon's mascot as a one-colour menu bar glyph: bolt antenna, round
 /// body, the eye and the smile cut out of it. Shapes mirror Tools/make-icon.swift.
 enum WatcherGlyph {
-    /// Not a template image: the colour carries the connection state.
-    static func image(color: NSColor, side: CGFloat = 18) -> NSImage {
+    /// `color` nil gives a template image, which the menu bar draws in its own
+    /// text colour — readable on any wallpaper. A colour is for states that mean
+    /// something (training, alert, error) and is drawn as given.
+    static func image(color: NSColor?, opacity: CGFloat = 1, side: CGFloat = 18) -> NSImage {
+        let ink = color ?? NSColor.black.withAlphaComponent(opacity)
         let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            draw(in: rect, color: color, context: context)
+            draw(in: rect, color: ink, context: context)
             return true
         }
-        image.isTemplate = false
+        image.isTemplate = color == nil
         return image
     }
 

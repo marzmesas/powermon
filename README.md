@@ -177,6 +177,23 @@ Other keys: `server.host` / `server.port` / `server.token` (see
 `power.baseline_w`, `power.psu_efficiency`, `cpu.*`, `activity.*` (what counts
 as "training" rather than idle-but-powered-on).
 
+## Alerts
+
+Off until you set `alerts.idle_w`. With it set, powermon notices the machine
+drawing more than that many watts **while the GPU is idle** — a stuck process, a
+job you forgot — once it has lasted `after_min` (10). It sends one push, one
+urgent reminder at `remind_min` (60) if it is still going, and one when it
+clears; nothing in between.
+
+Pushes go to an [ntfy](https://ntfy.sh) topic: install the app, subscribe to a
+long random topic name, and put its URL in `alerts.ntfy_url`. Without a URL the
+alert is still reported as `alert.active` in `/api/now`, and the menu bar app's
+icon turns yellow.
+
+```sh
+curl -d "powermon test" https://ntfy.sh/<your-topic>     # check delivery
+```
+
 ## Reaching it from your laptop or phone
 
 Out of the box the service listens on `127.0.0.1` only, so nothing off this

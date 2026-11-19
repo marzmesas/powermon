@@ -39,7 +39,8 @@ struct PopoverView: View {
     // MARK: - Sections
 
     private func header(_ snapshot: Snapshot) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        let alerting = snapshot.alert?.active == true
+        return VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(snapshot.meta.host)
                     .font(.system(size: 13, weight: .semibold))
@@ -49,9 +50,9 @@ struct PopoverView: View {
                 Spacer()
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(snapshot.busy ? Palette.gpu : Palette.muted)
+                        .fill(alerting ? Palette.warning : snapshot.busy ? Palette.gpu : Palette.muted)
                         .frame(width: 6, height: 6)
-                    Text(snapshot.busy ? "training" : "idle")
+                    Text(alerting ? "idle, high draw" : snapshot.busy ? "training" : "idle")
                         .font(.system(size: 11))
                         .foregroundStyle(Palette.secondary)
                 }

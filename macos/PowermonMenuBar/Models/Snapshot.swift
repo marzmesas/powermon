@@ -16,9 +16,16 @@ struct Snapshot: Codable, Sendable, Equatable {
     let gpu: GPU
     let mem: Memory
     let busy: Bool
+    /// Absent from servers older than the `[alerts]` section.
+    let alert: Alert?
     let totals: Totals
     let spark: Spark
     let meta: Meta
+
+    /// The server's idle-draw alert: power above `alerts.idle_w` with the GPU idle.
+    struct Alert: Codable, Sendable, Equatable {
+        let active: Bool
+    }
 
     struct Power: Codable, Sendable, Equatable {
         let totalW: Double

@@ -25,6 +25,8 @@ targets:
     platform: macOS
     sources:
       - path: PowermonMenuBar
+        # Tooling notes dropped into the tree must not ship inside the app.
+        excludes: ["**/CLAUDE.md"]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.marzmesas.powermon

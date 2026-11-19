@@ -101,3 +101,15 @@ nut_var = "ups.realpower"
 # Lets the dashboard split cost into work vs idle-but-powered-on.
 busy_gpu_util = 15         # percent
 busy_gpu_power_w = 80      # watts
+
+[alerts]
+# Notifies when the box draws real power while the GPU is idle — a stuck
+# process, a forgotten job. One push when it starts, an urgent reminder if it
+# is still going at remind_min, and one when it clears.
+idle_w = 0                 # watts; 0 = off. Set it a little above your idle draw.
+after_min = 10             # how long it must stay above idle_w before alerting
+remind_min = 60            # urgent reminder after this long; 0 = no reminder
+# An ntfy topic URL (https://ntfy.sh/<topic>, or your own server). Anyone who
+# knows the topic name can read it, so make it long and random. Empty = no push;
+# the alert still shows in /api/now and turns the menu bar icon yellow.
+ntfy_url = ""

@@ -181,7 +181,9 @@
   .axisline { stroke: var(--axis); stroke-width: 1; }
   .tick { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
   .tick.y { text-anchor: end; }
-  .dlabel { fill: var(--text-secondary); font-size: 11.5px; font-weight: 600; }
+  /* The halo keeps a label readable where a series line runs behind it. */
+  .dlabel { fill: var(--text-secondary); font-size: 11.5px; font-weight: 600;
+            paint-order: stroke; stroke: var(--surface-1); stroke-width: 4px; stroke-linejoin: round; }
   .band-gpu { fill: var(--series-gpu); }
   .band-cpu { fill: var(--series-cpu); }
   .band-other { fill: var(--series-other); }
@@ -645,7 +647,6 @@ function drawStack(svg, S) {
                  class: v === 0 ? "axisline" : "gridline" }, svg);
     text(svg, PAD.l - 8, Y(v) + 4, v.toLocaleString(), "tick y");
   });
-  text(svg, PAD.l - 8, PAD.t - 2, "W", "tick y");
 
   // stacked bands, bottom-up: GPU, CPU, other. 2px surface gap between fills.
   const stack = [
@@ -719,7 +720,6 @@ function drawBars(svg, S) {
                  class: v === 0 ? "axisline" : "gridline" }, svg);
     text(svg, PAD.l - 8, Y(v) + 4, v.toFixed(v < 1 ? 2 : 1), "tick y");
   });
-  text(svg, PAD.l - 8, PAD.t - 2, "kWh", "tick y");
 
   // 4px rounded data-end, square at the baseline
   keys.forEach((k, i) => {
@@ -762,7 +762,6 @@ function drawLines(svg, S) {
                  class: v === 0 ? "axisline" : "gridline" }, svg);
     text(svg, PAD.l - 8, Y(v) + 4, v.toFixed(0), "tick y");
   });
-  text(svg, PAD.l - 8, PAD.t - 2, "°C", "tick y");
   [["gpu_temp", "gpu"], ["cpu_temp", "cpu"]].forEach(([key, cls]) => {
     let d = "", open = false;
     S[key].forEach((v, i) => {
@@ -772,15 +771,15 @@ function drawLines(svg, S) {
     });
     if (d) el("path", { d, class: "edge edge-" + cls }, svg);
   });
-  // end labels, one per series
-  [["gpu_temp", "GPU"], ["cpu_temp", "CPU"]].forEach(([key, name]) => {
-    for (let i = S[key].length - 1; i >= 0; i--) {
-      if (S[key][i] != null) {
-        const t = text(svg, X(i) - 6, Y(S[key][i]) - 7, `${name} ${Math.round(S[key][i])}°`, "dlabel");
-        t.setAttribute("text-anchor", "end");
-        break;
-      }
-    }
+  // End labels, one per series. The hotter one sits above its line and the
+  // cooler one below, so they cannot collide when the two lines meet.
+  const ends = [["gpu_temp", "GPU"], ["cpu_temp", "CPU"]].map(([key, name]) => {
+    const i = S[key].findLastIndex((v) => v != null);
+    return i < 0 ? null : { name, i, v: S[key][i] };
+  }).filter(Boolean).sort((a, b) => b.v - a.v);
+  ends.forEach((e, rank) => {
+    const t = text(svg, X(e.i) - 6, Y(e.v) + (rank === 0 ? -7 : 15), `${e.name} ${Math.round(e.v)}°`, "dlabel");
+    t.setAttribute("text-anchor", "end");
   });
   return { X, Y, n };
 }

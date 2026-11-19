@@ -7,9 +7,8 @@ struct MenuBarLabel: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Circle()
-                .fill(dotColor)
-                .frame(width: 7, height: 7)
+            // The mascot, tinted with the state colour the dot used to carry.
+            Image(nsImage: WatcherGlyph.image(color: NSColor(dotColor)))
             Text(title)
                 // Mandatory: without monospaced digits the item changes width on
                 // every update and shoves neighbouring menu bar items around.

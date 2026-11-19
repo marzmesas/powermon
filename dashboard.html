@@ -771,16 +771,12 @@ function drawLines(svg, S) {
     });
     if (d) el("path", { d, class: "edge edge-" + cls }, svg);
   });
-  // End labels, one per series. The hotter one sits above its line and the
-  // cooler one below, so they cannot collide when the two lines meet.
-  const ends = [["gpu_temp", "GPU"], ["cpu_temp", "CPU"]].map(([key, name]) => {
-    const i = S[key].findLastIndex((v) => v != null);
-    return i < 0 ? null : { name, i, v: S[key][i] };
-  }).filter(Boolean).sort((a, b) => b.v - a.v);
-  ends.forEach((e, rank) => {
-    const t = text(svg, X(e.i) - 6, Y(e.v) + (rank === 0 ? -7 : 15), `${e.name} ${Math.round(e.v)}°`, "dlabel");
-    t.setAttribute("text-anchor", "end");
-  });
+  // x ticks, as on the power chart. Current values are in the hover tooltip.
+  const step = Math.max(1, Math.round(n / xTickTarget(W)));
+  for (let i = 0; i < n; i += step) {
+    const t = text(svg, X(i), H - 8, xLabel(S.t[i]), "tick");
+    t.setAttribute("text-anchor", i === 0 ? "start" : "middle");
+  }
   return { X, Y, n };
 }
 

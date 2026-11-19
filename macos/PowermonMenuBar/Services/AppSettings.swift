@@ -62,10 +62,21 @@ final class AppSettings: ObservableObject {
     /// Keychain account key: the host the token belongs to.
     var tokenAccount: String { serverURL?.host ?? "default" }
 
+    /// Read the Keychain once per host, not once per poll: every read by an
+    /// ad-hoc-signed build can raise the macOS password prompt.
+    private var tokenCache: (account: String, value: String?)?
+
     var token: String? {
-        get { KeychainStore.token(account: tokenAccount) }
+        get {
+            let account = tokenAccount
+            if let tokenCache, tokenCache.account == account { return tokenCache.value }
+            let value = KeychainStore.token(account: account)
+            tokenCache = (account, value)
+            return value
+        }
         set {
             KeychainStore.setToken(newValue, account: tokenAccount)
+            tokenCache = (tokenAccount, newValue)
             NotificationCenter.default.post(name: .powermonSettingsChanged, object: nil)
         }
     }

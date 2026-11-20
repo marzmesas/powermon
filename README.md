@@ -392,6 +392,28 @@ the token.
 
 </details>
 
+## Several machines
+
+Every machine keeps running its own powermon. One of them can additionally
+list the others and show them together: it polls each peer's `GET /api/now`
+(sending the peer's token in the `X-Powermon-Token` header) and the dashboard
+gains an "All machines" card with a row per machine and a total.
+
+```toml
+[peers]
+hosts = "nas=http://nas.lan:8787|abc123, lab=https://lab:8787"
+poll_s = 15      # seconds between polls
+timeout = 4      # per peer; a dead peer delays the others by at most this
+```
+
+Each entry is `name=URL`, optionally followed by `|TOKEN` (a read key from the
+peer's `--add-key`). The peer's token is stored in this machine's `config.toml`,
+so keep that file private (`--show-config` redacts it, and the Settings dialog
+cannot change it). A peer that has not answered for three poll intervals shows
+as unreachable with its last figures and how long ago they were read. Costs and
+the cost total are only summed when every reachable machine uses the same
+currency symbol; otherwise they show as unknown rather than a wrong sum.
+
 ## How accurate is it
 
 ```
@@ -513,6 +535,7 @@ constants. On a host with no GPU and no readable RAPL, every term is modelled.
 |---|---|
 | `GET /api/now` | current sample, period totals, 3-minute sparklines, metadata. `gpu.*` is the host aggregate across every card; `gpu.devices[]` carries each one separately |
 | `GET /api/runs?limit=50` (`&format=csv` for CSV) | training runs, newest first: `id`, `start`, `end` (null while running), `seconds`, `kwh`, `cost`, `peak_w`, `avg_w`, `name`, `running`. `/api/now` also carries the open one as `run` |
+| `GET /api/peers` | this machine first, then each configured peer: `name`, `self`, `ok`, `error`, `age_s`, `url`, `total_w`, `cost_per_h`, `busy`, `today_cost`, `month_cost`, `month_kwh`, `symbol` (null while a peer has never answered); `total` sums the reachable ones, with `mixed_currency` and null cost sums when currencies differ |
 | `GET /api/history?range=24h\|7d\|30d\|90d` (`&format=csv` for CSV) | time series (24 h = 5-min averages from raw samples; longer = hourly totals) |
 | `GET /healthz` | the same `health` block as `/api/now`: `ok`, `last_sample_age_s`, `coverage_today`, the live CPU/GPU sources, and an `issues` list at `error` / `warn` / `info` |
 | `GET /api/settings` | the settings the dashboard can change: `{"values": {section: {key: value}}, "overridden": ["tariff.rate", …], "editable": bool, "redacted": [...]}`. A `read` key gets the ntfy and webhook URLs as `""`, listed in `redacted` |

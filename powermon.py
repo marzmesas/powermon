@@ -36,6 +36,7 @@ import os
 import re
 import shutil
 import socket
+import urllib.error
 import urllib.request
 import sqlite3
 import subprocess
@@ -82,6 +83,7 @@ DEFAULTS = {
     # after_idle_min = 0 leaves the machine alone: sleeping is the user's call.
     "suspend": {"after_idle_min": 0.0, "command": "systemctl suspend",
                 "max_cpu_pct": 20.0, "skip_if_logged_in": True},
+    "peers": {"hosts": "", "poll_s": 15.0, "timeout": 4.0},
 }
 
 
@@ -2700,6 +2702,179 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- peers
+#
+# Each machine runs its own powermon; this one may also read its peers'
+# /api/now and show them together. No protocol of its own, nothing stored.
+
+
+def parse_peers(text) -> list[dict]:
+    """`name=http://host:8787|TOKEN, other=https://host` -> [{name, url, token}]."""
+    peers, seen = [], set()
+    for entry in str(text or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        name, eq, rest = entry.partition("=")
+        name = name.strip()
+        url, _, token = rest.partition("|")
+        url, token = url.strip(), token.strip()
+        # Never echo the token back in an error.
+        shown = f"{name}={url}"
+        if not eq or not name:
+            raise ValueError(f"peers.hosts: entry {shown!r} must look like name=http://host:8787")
+        if name in seen:
+            raise ValueError(f"peers.hosts: duplicate name {name!r}")
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError(f"peers.hosts: entry {shown!r} needs an http:// or https:// URL")
+        seen.add(name)
+        peers.append({"name": name, "url": url.rstrip("/"), "token": token})
+    return peers
+
+
+def peers_config(cfg: dict) -> tuple[list[dict], float, float]:
+    section = cfg.get("peers", {})
+    poll_s, timeout = float(section.get("poll_s", 15.0)), float(section.get("timeout", 4.0))
+    if not (poll_s > 0 and timeout > 0):
+        raise ValueError("peers.poll_s and peers.timeout must be above 0")
+    return parse_peers(section.get("hosts")), poll_s, timeout
+
+
+def _public_url(url: str) -> str:
+    """The peer URL without any user:password@ part."""
+    parts = urlparse(url)
+    return parts._replace(netloc=parts.netloc.rpartition("@")[2]).geturl()
+
+
+def fetch_peer_now(url: str, token: str, timeout: float) -> dict:
+    # The token travels in a header only, never in the URL.
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["X-Powermon-Token"] = token
+    request = urllib.request.Request(url + "/api/now", headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.load(response)
+
+
+def _figure(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) \
+        and math.isfinite(value) else None
+
+
+def peer_summary(payload: dict) -> dict:
+    """The few /api/now figures the combined view needs; missing stays None."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("power"), dict):
+        raise ValueError("not a powermon /api/now")
+    tot = payload.get("totals") or {}
+    return {"total_w": _figure(payload["power"].get("total_w")),
+            "cost_per_h": _figure(payload["power"].get("cost_per_h")),
+            "busy": bool(payload["busy"]) if "busy" in payload else None,
+            "today_cost": _figure((tot.get("today") or {}).get("cost")),
+            "month_cost": _figure((tot.get("month") or {}).get("cost")),
+            "month_kwh": _figure((tot.get("month") or {}).get("kwh")),
+            "symbol": (payload.get("meta") or {}).get("symbol")}
+
+
+PEER_FIGURES = ("total_w", "cost_per_h", "busy", "today_cost", "month_cost", "month_kwh", "symbol")
+
+
+def machine_row(name: str, url: str | None, summary: dict | None, age_s: float | None,
+                error: str | None, ok: bool, is_self: bool = False) -> dict:
+    """One /api/peers machine. No summary (never answered) -> null figures, not zeros."""
+    row = {"name": name, "self": is_self, "ok": ok, "error": None if ok else error,
+           "age_s": age_s, "url": url}
+    row.update({k: (summary or {}).get(k) for k in PEER_FIGURES})
+    return row
+
+
+def peers_total(machines: list[dict]) -> dict:
+    good = [m for m in machines if m["ok"]]
+    symbols = {m["symbol"] for m in good}
+    mixed = len(symbols) > 1
+
+    def add(key: str, money: bool = False):
+        values = [m[key] for m in good]
+        # An unknown figure makes the sum unknown; it must not read as smaller.
+        if not good or None in values or (money and mixed):
+            return None
+        return sum(values)
+
+    return {"total_w": add("total_w"), "cost_per_h": add("cost_per_h", True),
+            "today_cost": add("today_cost", True), "month_cost": add("month_cost", True),
+            "month_kwh": add("month_kwh"), "machines_ok": len(good),
+            "machines": len(machines), "mixed_currency": mixed}
+
+
+class PeerPoller:
+    """Polls each peer's /api/now every `poll_s` on one daemon thread.
+
+    Peers are fetched one after another, each with its own short timeout, so a
+    dead peer delays the others by at most `timeout`. ponytail: sequential, a
+    thread per peer if many peers are slow at once.
+    """
+
+    def __init__(self, peers: list[dict], poll_s: float, timeout: float,
+                 fetch=fetch_peer_now, clock=time.time):
+        self.peers, self.poll_s, self.timeout = peers, poll_s, timeout
+        self.fetch, self.clock = fetch, clock
+        self._lock = threading.Lock()
+        self._state = {p["name"]: {"summary": None, "got": None, "error": None} for p in peers}
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        threading.Thread(target=self._run, name="peers", daemon=True).start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self.poll_once()
+            self._stop.wait(self.poll_s)
+
+    @staticmethod
+    def _why(exc: BaseException) -> str:
+        # Short and token-free: never str(exc), which may carry the URL.
+        if isinstance(exc, urllib.error.HTTPError):
+            return f"HTTP {exc.code}"
+        if isinstance(exc, (TimeoutError, socket.timeout)):
+            return "timeout"
+        if isinstance(exc, (ValueError, TypeError, KeyError)):
+            return "bad response"
+        return "unreachable"
+
+    def poll_once(self) -> None:
+        for peer in self.peers:
+            try:
+                summary = peer_summary(self.fetch(peer["url"], peer["token"], self.timeout))
+                result = {"summary": summary, "got": self.clock(), "error": None}
+            except Exception as exc:  # one peer failing must not stop the others
+                result = {"error": self._why(exc)}
+            with self._lock:
+                self._state[peer["name"]].update(result)
+
+    def machines(self, now: float) -> list[dict]:
+        rows = []
+        with self._lock:
+            state = {k: dict(v) for k, v in self._state.items()}
+        for peer in self.peers:
+            st = state[peer["name"]]
+            age = None if st["got"] is None else max(0.0, now - st["got"])
+            ok = age is not None and age <= 3 * self.poll_s
+            error = st["error"] or ("stale" if age is not None else "no answer yet")
+            rows.append(machine_row(peer["name"], _public_url(peer["url"]), st["summary"],
+                                    age, error, ok))
+        return rows
+
+
+def peers_payload(local_now: dict, poller: "PeerPoller | None", now: float) -> dict:
+    me = machine_row(local_now["meta"]["host"], None, peer_summary(local_now), 0.0, None,
+                     True, is_self=True)
+    machines = [me] + (poller.machines(now) if poller else [])
+    return {"machines": machines, "total": peers_total(machines)}
+
+
 # --------------------------------------------------------------------------- http
 
 
@@ -2713,6 +2888,7 @@ class Handler(BaseHTTPRequestHandler):
     keys: list = []
     throttle: "Throttle" = None
     tls: bool = False
+    peers: "PeerPoller | None" = None
 
     def log_message(self, fmt: str, *args) -> None:  # quiet by default
         if os.environ.get("POWERMON_ACCESS_LOG"):
@@ -2858,6 +3034,9 @@ class Handler(BaseHTTPRequestHandler):
                                        'attachment; filename="powermon-runs.csv"')])
                 else:
                     self._json({"runs": runs})
+            elif path == "/api/peers":
+                self._json(peers_payload(now_payload(self.monitor, self.store, self.cfg),
+                                         self.peers, time.time()))
             elif path == "/metrics":
                 self._send(200, prometheus_text(now_payload(self.monitor, self.store, self.cfg)).encode(),
                            "text/plain; version=0.0.4; charset=utf-8")
@@ -3015,7 +3194,7 @@ def main() -> int:
         shown = {section: dict(values) for section, values in cfg.items()}
         for section, key in [("server", "token"), ("tariff", "dynamic_url"),
                              ("tariff", "dynamic_headers"), ("meter", "http_url"),
-                             ("meter", "http_headers"), *(n.split(".") for n in SECRET_SETTINGS)]:
+                             ("meter", "http_headers"), ("peers", "hosts"), *(n.split(".") for n in SECRET_SETTINGS)]:
             if shown.get(section, {}).get(key):
                 shown[section][key] = "(redacted)"
         print(json.dumps(shown, indent=2, default=str))
@@ -3037,6 +3216,7 @@ def main() -> int:
     fatal = validate_server_config(cfg, cfg_path)
     try:
         build_policies(cfg, None)   # the same checks a dashboard change must pass
+        peers_config(cfg)
     except (TypeError, ValueError) as exc:
         fatal = fatal or str(exc)
     if fatal:
@@ -3045,6 +3225,10 @@ def main() -> int:
     Handler.trusted_proxies = parse_trusted_proxies(cfg["server"].get("trusted_proxies"))
     Handler.keys = load_keys(cfg, cfg_path.parent)
     Handler.throttle = Throttle()
+    peer_list, poll_s, peer_timeout = peers_config(cfg)
+    if peer_list:
+        Handler.peers = PeerPoller(peer_list, poll_s, peer_timeout)
+        Handler.peers.start()
 
     db_path = Path(os.path.expanduser(
         str(cfg["sampling"].get("db") or HERE / "powermon.db")))

@@ -441,6 +441,12 @@
   </div>
 </section>
 
+<!-- all machines (only when peers are configured) -->
+<section class="card hidden" id="peers-card" style="margin-bottom:14px" aria-labelledby="t6">
+  <div class="chart-head"><span class="chart-title" id="t6">All machines</span></div>
+  <div class="table-scroll" id="peers"></div>
+</section>
+
 <!-- meters -->
 <div class="grid meters" style="margin-bottom:14px" id="meters"></div>
 
@@ -1229,6 +1235,65 @@ function renderRuns(runs) {
   box.appendChild(tbl);
 }
 
+async function tickPeers() {
+  try {
+    const r = await fetch("api/peers", { cache: "no-store" });
+    if (!r.ok) throw new Error("http");
+    renderPeers(await r.json());
+  } catch (e) { /* hold previous render; tickNow owns the banner */ }
+}
+
+function renderPeers(data) {
+  const card = $("peers-card");
+  card.classList.toggle("hidden", data.machines.length < 2);
+  const box = $("peers");
+  box.textContent = "";
+  if (data.machines.length < 2) return;
+  const cell = (tr, content, bold) => {
+    const td = document.createElement("td");
+    if (content instanceof Node) td.appendChild(content); else td.textContent = content;
+    if (bold) td.style.fontWeight = "700";
+    tr.appendChild(td);
+  };
+  const sym = (m) => m.symbol || SYM;
+  const money = (v, m) => v == null ? "-" : sym(m) + fmt.money(v);
+  const tbl = document.createElement("table");
+  const hr = document.createElement("tr");
+  ["Machine", "State", "Now", "Cost/hour", "Today", "This month"].forEach((h) => {
+    const th = document.createElement("th"); th.textContent = h; hr.appendChild(th);
+  });
+  const head = document.createElement("thead"); head.appendChild(hr);
+  const tb = document.createElement("tbody");
+  data.machines.forEach((m) => {
+    const tr = document.createElement("tr");
+    let name = m.name;
+    if (m.url) {
+      name = document.createElement("a");
+      name.href = m.url; name.textContent = m.name;
+    }
+    const state = m.ok ? (m.busy == null ? "-" : m.busy ? "training" : "idle")
+      : "unreachable" + (m.age_s == null ? "" : " \u00b7 last seen " + Math.max(1, Math.round(m.age_s / 60)) + " min ago");
+    cell(tr, name);
+    cell(tr, state);
+    cell(tr, m.total_w == null ? "-" : fmt.w(m.total_w) + " W");
+    cell(tr, money(m.cost_per_h, m));
+    cell(tr, money(m.today_cost, m));
+    cell(tr, money(m.month_cost, m));
+    tb.appendChild(tr);
+  });
+  const t = data.total, tr = document.createElement("tr");
+  const tsym = (v) => v == null ? "-" : (data.machines.find((m) => m.ok) || {}).symbol + fmt.money(v);
+  cell(tr, "Total (" + t.machines_ok + " of " + t.machines + " reachable)", true);
+  cell(tr, t.mixed_currency ? "mixed currencies" : "", true);
+  cell(tr, t.total_w == null ? "-" : fmt.w(t.total_w) + " W", true);
+  cell(tr, tsym(t.cost_per_h), true);
+  cell(tr, tsym(t.today_cost), true);
+  cell(tr, tsym(t.month_cost), true);
+  tb.appendChild(tr);
+  tbl.append(head, tb);
+  box.appendChild(tbl);
+}
+
 /* ---------------------------------------------------------------- settings */
 let SETTINGS = null;    // last GET api/settings payload
 const dlg = $("settings");
@@ -1395,6 +1460,8 @@ addEventListener("resize", () => {
 tickNow();
 tickHistory();
 tickRuns();
+tickPeers();
+setInterval(tickPeers, 15000);
 setInterval(tickNow, 2000);
 setInterval(tickHistory, 60000);
 setInterval(tickRuns, 60000);

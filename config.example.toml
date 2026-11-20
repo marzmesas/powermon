@@ -183,3 +183,11 @@ month_budget = 0           # this month's cost so far, in the tariff currency; o
 # command = "systemctl suspend"
 # max_cpu_pct = 20
 # skip_if_logged_in = true
+
+# Show other powermon machines in one view. Each still runs its own powermon.
+# Comma-separated name=URL, optionally |TOKEN (the peer's read key). The tokens
+# live in this file, so keep it private. Costs are summed only for one currency.
+# [peers]
+# hosts = "nas=http://nas.lan:8787|abc123, lab=https://lab:8787"
+# poll_s = 15
+# timeout = 4

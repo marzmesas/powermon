@@ -3,283 +3,420 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>powermon</title>
+<link rel="icon" id="favicon" href="data:,">
 <style>
-  /* ---- palette: validated reference instance, slots 1-3 (blue / orange / aqua) ---- */
+  /* ================================================================ tokens
+     Colour means one thing each, everywhere:
+       --power / --gpu  mint        live power, the GPU's share of it
+       --cpu            cool blue   the CPU's share
+       --rest           green-grey  board, RAM, drives and PSU loss
+       --money          amber       every currency figure, nothing else
+     Semantic colours (--warn, --crit) are kept apart from those four. */
   :root {
     color-scheme: light;
-    --surface-1: #fcfcfb;
-    --plane: #f9f9f7;
-    --text-primary: #0b0b0b;
-    --text-secondary: #52514e;
-    --text-muted: #898781;
-    --grid: #e1e0d9;
-    --axis: #c3c2b7;
-    --border: rgba(11, 11, 11, 0.10);
-    --series-gpu: #2a78d6;
-    --series-cpu: #eb6834;
-    --series-other: #1baf7a;
-    --track: #cde2fb;
-    --status-good: #0ca30c;
-    --status-warning: #fab219;
-    --status-serious: #ec835a;
-    --status-critical: #d03b3b;
-    --shadow: 0 1px 2px rgba(11,11,11,.05);
+    --ground: #edf2ef;
+    --panel: #ffffff;
+    --panel-2: #f5f8f6;
+    --hero-wash: #e2f2ea;
+    --rule: #d3ddd8;
+    --rule-strong: #b3c3bb;
+    --ink: #0e1b16;
+    --ink-2: #3c4d45;
+    --ink-3: #56685f;
+    --track: #dde6e1;
+    --power: #0f7d58;
+    --gpu: #0f7d58;
+    --cpu: #1a6aa0;
+    --rest: #5e776c;
+    --money: #8a5a00;
+    --money-wash: #fbf4e2;
+    --money-rule: #e6d29c;
+    --warn: #b4470f;
+    --crit: #b42318;
+    --on-chip: #ffffff;
+    --needle: #0e1b16;
+    --shadow: 0 1px 2px rgba(14, 27, 22, .06);
+
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --fs-xs: 11px;      /* labels, ticks */
+    --fs-sm: 12.5px;    /* sub-lines, tables */
+    --fs-md: 14px;      /* body */
+    --fs-lg: 17px;      /* the spoken sentence */
+    --fs-xl: 21px;      /* instrument readouts */
+    --fs-2xl: 27px;     /* money figures */
+    --fs-3xl: 34px;     /* idle callout */
+    --fs-hero: clamp(52px, 8.4vw, 88px);
+    --r: 6px;           /* panels */
+    --r-sm: 3px;        /* chips, inputs, buttons */
+    --accent: var(--power);
   }
   @media (prefers-color-scheme: dark) {
-    :root:where(:not([data-theme="light"])) {
+    :root:not([data-theme="light"]) {
       color-scheme: dark;
-      --surface-1: #1a1a19;
-      --plane: #0d0d0d;
-      --text-primary: #ffffff;
-      --text-secondary: #c3c2b7;
-      --text-muted: #898781;
-      --grid: #2c2c2a;
-      --axis: #383835;
-      --border: rgba(255, 255, 255, 0.10);
-      --series-gpu: #3987e5;
-      --series-cpu: #d95926;
-      --series-other: #199e70;
-      --track: #184f95;
-      --shadow: none;
+      --ground: #0b1310; --panel: #111c18; --panel-2: #16241f; --hero-wash: #16302a;
+      --rule: #213129; --rule-strong: #30463c;
+      --ink: #e7f2ed; --ink-2: #aac0b6; --ink-3: #849a90; --track: #1c2c26;
+      --power: #4be0a6; --gpu: #4be0a6; --cpu: #7cc4f0; --rest: #86a497;
+      --money: #fab219; --money-wash: #1c190c; --money-rule: #574811;
+      --warn: #ff8f5e; --crit: #ff6b6b; --on-chip: #0b1310; --needle: #e7f2ed; --shadow: none;
     }
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --surface-1: #1a1a19;
-    --plane: #0d0d0d;
-    --text-primary: #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted: #898781;
-    --grid: #2c2c2a;
-    --axis: #383835;
-    --border: rgba(255, 255, 255, 0.10);
-    --series-gpu: #3987e5;
-    --series-cpu: #d95926;
-    --series-other: #199e70;
-    --track: #184f95;
-    --shadow: none;
+    --ground: #0b1310; --panel: #111c18; --panel-2: #16241f; --hero-wash: #16302a;
+    --rule: #213129; --rule-strong: #30463c;
+    --ink: #e7f2ed; --ink-2: #aac0b6; --ink-3: #849a90; --track: #1c2c26;
+    --power: #4be0a6; --gpu: #4be0a6; --cpu: #7cc4f0; --rest: #86a497;
+    --money: #fab219; --money-wash: #1c190c; --money-rule: #574811;
+    --warn: #ff8f5e; --crit: #ff6b6b; --on-chip: #0b1310; --needle: #e7f2ed; --shadow: none;
   }
+  /* The state recolours the hero, the chip and the mascot. */
+  body[data-state="idle"] { --accent: var(--rest); }
+  body[data-state="alert"] { --accent: var(--warn); }
+  body[data-state="unreach"] { --accent: var(--ink-3); }
 
+  /* ================================================================ base */
   * { box-sizing: border-box; }
   body {
-    margin: 0;
-    padding: 20px 20px 56px;
-    background: var(--plane);
-    color: var(--text-primary);
-    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; padding: 18px 20px 56px;
+    background: var(--ground); color: var(--ink);
+    font: var(--fs-md)/1.5 var(--sans);
+    -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 1180px; margin: 0 auto; }
-
-  /* ---- header ---- */
-  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
-  h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .01em; }
-  .host { color: var(--text-secondary); font-size: 13px; }
+  .wrap { max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  .hidden { display: none !important; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .spacer { flex: 1; }
-  .pill {
-    font-size: 11.5px; color: var(--text-secondary); border: 1px solid var(--border);
-    border-radius: 999px; padding: 2px 9px; background: var(--surface-1); white-space: nowrap;
+  .lbl {
+    font: 600 var(--fs-xs)/1.3 var(--mono); letter-spacing: .12em; text-transform: uppercase;
+    color: var(--ink-3);
   }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--status-good);
-         display: inline-block; margin-right: 5px; vertical-align: 1px; }
-  .dot.stale { background: var(--status-critical); }
-  button {
-    font: inherit; font-size: 12.5px; color: var(--text-secondary); cursor: pointer;
-    background: var(--surface-1); border: 1px solid var(--border); border-radius: 7px;
-    padding: 4px 10px;
+  .note { font: var(--fs-sm)/1.45 var(--sans); color: var(--ink-3); }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  a { color: inherit; text-underline-offset: 3px; }
+  a.lbl:hover { color: var(--ink); }
+  :focus-visible { outline: 2px solid var(--power); outline-offset: 2px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r);
+    padding: 16px 18px; box-shadow: var(--shadow); min-width: 0;
   }
-  button:hover { color: var(--text-primary); }
-  button[aria-pressed="true"], button.on {
-    color: var(--text-primary); border-color: var(--text-muted); font-weight: 600;
-  }
-  button:focus-visible { outline: 2px solid var(--series-gpu); outline-offset: 1px; }
+  .panel-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .title { font: 600 12.5px/1.3 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--ink); margin: 0; }
 
-  /* ---- health banners ---- */
-  #banners { display: grid; gap: 8px; margin-bottom: 14px; }
+  /* buttons: equipment switches, not pills */
+  button, .btn {
+    font: 600 11.5px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase;
+    color: var(--ink-2); background: var(--panel); cursor: pointer;
+    border: 1px solid var(--rule-strong); border-radius: var(--r-sm); padding: 7px 10px;
+  }
+  button:hover { color: var(--ink); border-color: var(--ink-3); }
+  button[aria-pressed="true"] { color: var(--on-chip); background: var(--ink-2); border-color: var(--ink-2); }
+  button.primary { background: var(--power); border-color: var(--power); color: var(--on-chip); }
+  button.primary:hover { filter: brightness(1.08); }
+
+  /* ================================================================ header */
+  header.top { display: flex; align-items: center; gap: 10px 12px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .mascot { width: 36px; height: 36px; flex: none; display: block; }
+  .mascot .m-body, .mascot .m-pupil { fill: var(--accent); transition: fill .4s; }
+  .mascot .m-feet { fill: color-mix(in srgb, var(--accent) 55%, #000); transition: fill .4s; }
+  .mascot .m-bolt { fill: #fab219; }   /* the brand mark from the app icon */
+  .mascot .m-eye { fill: #0b1310; }
+  .mascot .m-needle { stroke: var(--accent); stroke-linecap: round; fill: none; }
+  .mascot .m-smile { stroke: #0b1310; fill: none; stroke-linecap: round; }
+  .m-needle-g { transform-box: view-box; transform-origin: 50px 54px; transition: transform .9s cubic-bezier(.3,.7,.3,1); }
+  .wordmark { font: 700 18px/1 var(--mono); letter-spacing: -.02em; margin: 0; }
+  .host { font: var(--fs-sm)/1.3 var(--mono); color: var(--ink-3); }
+  .chip {
+    --c: var(--accent);
+    display: inline-block; font: 700 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase;
+    padding: 6px 9px; border-radius: var(--r-sm); background: var(--c); color: var(--on-chip);
+    white-space: nowrap; transition: background .4s;
+  }
+  .chip.sm { font-size: 10px; padding: 3px 6px; letter-spacing: .1em; vertical-align: 1px; }
+  .chip.s-work { --c: var(--gpu); } .chip.s-idle { --c: var(--rest); }
+  .chip.s-alert { --c: var(--warn); } .chip.s-unreach { --c: var(--ink-3); }
+  .pill:empty { display: none; }
+  .pill {
+    font: 11.5px/1 var(--mono); color: var(--ink-2); white-space: nowrap;
+    border: 1px solid var(--rule-strong); border-radius: var(--r-sm); padding: 5px 8px;
+  }
+
+  /* ================================================================ banners */
+  #banners { display: grid; gap: 6px; }
   #banners:empty { display: none; }
   .banner {
-    display: flex; gap: 9px; align-items: baseline; font-size: 13px;
-    border: 1px solid var(--border); border-left-width: 3px; border-radius: 8px;
-    padding: 9px 12px; background: var(--surface-1); color: var(--text-secondary);
+    display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--ink-3);
+    border-radius: var(--r-sm); padding: 8px 12px; font-size: var(--fs-sm); color: var(--ink-2);
   }
-  .banner b { color: var(--text-primary); font-weight: 600; }
-  .banner.error { border-left-color: var(--status-critical); }
-  .banner.warn { border-left-color: var(--status-warning); }
-  .banner.info { border-left-color: var(--text-muted); }
+  .banner b { font: 700 var(--fs-xs)/1.3 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--ink); }
+  .banner.error { border-left-color: var(--crit); }
+  .banner.warn { border-left-color: var(--warn); }
 
-  /* ---- per-device rows ---- */
-  .devs { margin-top: 10px; display: grid; gap: 4px; }
-  .dev {
-    display: flex; gap: 8px; font-size: 12px; color: var(--text-secondary);
-    border-top: 1px solid var(--border); padding-top: 5px; white-space: nowrap;
+  /* ================================================================ hero: dial + where it goes */
+  .hero {
+    padding: 18px 22px 16px; border-top: 3px solid var(--accent);
+    background: radial-gradient(110% 120% at 0% 0%, var(--hero-wash) 0%, transparent 55%), var(--panel);
+    transition: border-color .4s;
   }
-  .dev .dev-name {
-    flex: 1; min-width: 0; color: var(--text-primary);
-    overflow: hidden; text-overflow: ellipsis;
+  .hero-grid { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 20px 40px; align-items: start; }
+  .dial-col { display: flex; flex-direction: column; align-items: center; min-width: 0; }
+  .dial-col > .lbl { align-self: flex-start; }
+  svg.dial { width: 100%; max-width: 400px; display: block; margin-top: 4px; overflow: visible; }
+  .dial .ring { fill: none; stroke: var(--rule-strong); stroke-width: 1; }
+  .dial .track { fill: none; stroke: var(--track); stroke-width: 6; }
+  .dial .value { fill: none; stroke: var(--accent); stroke-width: 6;
+                 transition: stroke-dasharray .9s cubic-bezier(.3,.7,.3,1), stroke .4s; }
+  .dial .major { stroke: var(--ink-2); stroke-width: 2; }
+  .dial .minor { stroke: var(--ink-3); stroke-width: 1; opacity: .7; }
+  .dial .numeral { fill: var(--ink-2); font: 600 12px var(--mono); text-anchor: middle; font-variant-numeric: tabular-nums; }
+  .dial .unit { fill: var(--ink-3); font: 600 10px var(--mono); letter-spacing: .14em; text-anchor: middle; }
+  .dial .mk-all { stroke: var(--ink); stroke-width: 3; }
+  .dial .mk-today { fill: var(--ink-2); }
+  .dial .mk-idle { stroke: var(--warn); stroke-width: 3; }
+  .dial:not(.scaled) .needle, .dial:not(.scaled) .hub-in { display: none; }
+  .needle { transform-box: view-box; transform-origin: 150px 142px; transform: rotate(-120deg);
+            transition: transform .9s cubic-bezier(.3,.7,.3,1); }
+  .needle polygon { fill: var(--needle); }
+  .needle .tipline { stroke: var(--accent); stroke-width: 3; stroke-linecap: round; transition: stroke .4s; }
+  .dial .hub { fill: var(--needle); } .dial .hub-in { fill: var(--accent); transition: fill .4s; }
+  .readout {
+    font: 700 var(--fs-hero)/.95 var(--mono); letter-spacing: -.05em; color: var(--ink);
+    font-variant-numeric: tabular-nums; margin-top: -2px; white-space: nowrap;
   }
-  .dev .dev-num { font-variant-numeric: tabular-nums; text-align: right; }
+  .readout .u { font-size: .3em; letter-spacing: .04em; color: var(--accent); margin-left: .2em; font-weight: 700; }
+  .dial-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; margin-top: 10px;
+                 font: var(--fs-xs)/1.4 var(--mono); color: var(--ink-3); }
+  .dial-legend span { white-space: nowrap; }
+  .key-all, .key-today, .key-idle { display: inline-block; margin-right: 5px; vertical-align: -1px; }
+  .key-all { width: 3px; height: 10px; background: var(--ink); }
+  .key-idle { width: 3px; height: 10px; background: var(--warn); }
+  .key-today { width: 0; height: 0; border: 5px solid transparent; border-bottom: 8px solid var(--ink-2); border-top: 0; vertical-align: 1px; }
 
-  /* ---- cards ---- */
-  .card {
-    background: var(--surface-1); border: 1px solid var(--border);
-    border-radius: 12px; padding: 16px 18px; box-shadow: var(--shadow);
+  .side-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding-top: 2px; }
+  .split { display: grid; gap: 10px; margin-top: 2px; }
+  .srow { display: grid; grid-template-columns: 44px minmax(0, 1fr) 72px; align-items: center; gap: 12px; }
+  .srow .k { font: 700 12px var(--mono); letter-spacing: .1em; color: var(--ink-2); }
+  .srow .v { font: 600 16px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+  .led { position: relative; height: 18px;
+         background: repeating-linear-gradient(90deg, var(--track) 0 4px, transparent 4px 6px); }
+  .led i { position: absolute; inset: 0 auto 0 0; width: 0; transition: width .9s cubic-bezier(.3,.7,.3,1);
+           background: repeating-linear-gradient(90deg, var(--c) 0 4px, transparent 4px 6px); }
+  .led b { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--ink-2); }
+  .split-scale { display: grid; grid-template-columns: 44px minmax(0, 1fr) 72px; gap: 12px;
+                 font: var(--fs-xs) var(--mono); color: var(--ink-3); }
+  .split-scale span:nth-child(2) { display: flex; justify-content: space-between; border-top: 1px solid var(--rule-strong); padding-top: 3px; }
+  .spark-box { margin-top: 6px; border-top: 1px solid var(--rule); padding-top: 10px; }
+  .hero-spark { width: 100%; height: 84px; display: block; margin-top: 6px; }
+  .say {
+    margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--rule);
+    font: 400 var(--fs-lg)/1.5 var(--sans); color: var(--ink); text-wrap: pretty;
+    font-variant-numeric: tabular-nums;
   }
-  .grid { display: grid; gap: 14px; }
-  .label {
-    font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em;
-    color: var(--text-muted); font-weight: 600;
+  .say b { font-weight: 650; }
+  .say b.w { color: var(--ink); }
+  .say b.money { color: var(--money); }
+  .hero-foot { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px; }
+  /* No reading: the live figures dim and lose their colour. */
+  body[data-state="unreach"] .live { opacity: .42; filter: grayscale(1); }
+  .live { transition: opacity .4s; }
+
+  /* ================================================================ money */
+  .money-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px 20px; }
+  .mcell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .amt { font: 700 var(--fs-2xl)/1.1 var(--mono); letter-spacing: -.03em; color: var(--money); font-variant-numeric: tabular-nums; }
+  .amt.plain { color: var(--ink); }
+  .amt .u { font-size: .5em; letter-spacing: 0; margin-left: .15em; color: var(--ink-3); }
+  .msub { font: var(--fs-xs)/1.45 var(--mono); color: var(--ink-3); }
+  .idle-call {
+    margin-top: 16px; display: flex; gap: 6px 16px; align-items: baseline; flex-wrap: wrap;
+    border: 1px solid var(--money-rule); background: var(--money-wash); border-radius: var(--r-sm); padding: 12px 16px;
   }
+  .idle-call strong { font: 800 var(--fs-3xl)/1 var(--mono); letter-spacing: -.03em; color: var(--money); font-variant-numeric: tabular-nums; }
+  .idle-call strong.plain { color: var(--ink); }
+  .idle-call.plain { border-color: var(--rule-strong); background: var(--panel-2); }
+  .idle-call span { font: 15px/1.45 var(--sans); color: var(--ink-2); flex: 1 1 260px; }
 
-  /* ---- hero ---- */
-  .hero { display: grid; grid-template-columns: minmax(210px, 1fr) 1fr; gap: 22px; align-items: end; }
-  .hero-num { font-size: 60px; line-height: 1; font-weight: 600; letter-spacing: -.02em; }
-  .hero-num .u { font-size: 22px; font-weight: 500; color: var(--text-secondary); margin-left: 4px; }
-  .hero-sub { color: var(--text-secondary); margin-top: 8px; font-size: 13px; }
-  .hero-spark { width: 100%; height: 68px; display: block; }
-  .rate-row { display: flex; gap: 26px; flex-wrap: wrap; margin-top: 6px; }
-  .rate-row div span { display: block; }
-  .rate-big { font-size: 21px; font-weight: 600; }
+  /* ================================================================ instrument strip */
+  .strip { overflow: hidden; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+  .strip-in { display: grid; grid-template-columns: repeat(auto-fit, minmax(136px, 1fr)); margin: -1px 0 0 -1px; }
+  .icell { padding: 10px 14px 11px; border-left: 1px solid var(--rule); border-top: 1px solid var(--rule); min-width: 0; }
+  .icell .val { font: 600 var(--fs-xl)/1.15 var(--mono); font-variant-numeric: tabular-nums; margin-top: 3px; white-space: nowrap; }
+  .icell .val .u { font-size: 12px; color: var(--ink-3); margin-left: 3px; font-weight: 600; }
+  .icell .bar { height: 3px; background: var(--track); margin-top: 6px; }
+  .icell .bar i { display: block; height: 100%; background: var(--c, var(--ink-3)); transition: width .6s; }
+  .icell .bar i.warn { background: var(--warn); } .icell .bar i.crit { background: var(--crit); }
+  .icell .sub { font: var(--fs-xs)/1.4 var(--mono); color: var(--ink-3); margin-top: 5px;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #gpu-devs:empty { display: none; }
+  #gpu-devs { margin-top: 10px; }
+  #gpu-devs th { background: var(--ground); }
 
-  /* ---- meters ---- */
-  .meters { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-  /* Label over value, each on one line: a side-by-side pair wraps in a narrow
-     card and pushes that card's bar below its neighbours'. */
-  .meter-head { display: flex; flex-direction: column; gap: 4px; }
-  .meter-head > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .meter-val { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .track { height: 7px; border-radius: 4px; background: var(--track); overflow: hidden; margin-top: 8px; }
-  .fill { height: 100%; border-radius: 4px; background: var(--series-gpu); transition: width .4s ease; }
-  .fill.warn { background: var(--status-warning); }
-  .fill.crit { background: var(--status-critical); }
-  .meter-sub { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
-
-  /* ---- stat tiles ---- */
-  .tiles { grid-template-columns: repeat(auto-fit, minmax(172px, 1fr)); }
-  .tile-val { font-size: 27px; font-weight: 600; line-height: 1.15; margin-top: 3px; }
-  .tile-val .u { font-size: 14px; font-weight: 500; color: var(--text-secondary); margin-left: 3px; }
-  .tile-sub { font-size: 12.5px; color: var(--text-secondary); margin-top: 4px; }
-
-  /* ---- charts ---- */
-  .filters {
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    margin: 26px 0 14px;
-  }
-  .filters .label { margin-right: 4px; }
-  .chart-card { margin-bottom: 14px; }
-  .chart-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 2px; }
-  .chart-title { font-size: 14px; font-weight: 600; }
-  .chart-note { font-size: 12.5px; color: var(--text-muted); }
-  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 8px 0 4px; font-size: 12.5px;
-            color: var(--text-secondary); }
-  .legend span.key { display: inline-block; width: 12px; height: 12px; border-radius: 3px;
-                     margin-right: 6px; vertical-align: -2px; }
-  .legend span.key.line { height: 2px; width: 14px; border-radius: 2px; vertical-align: 3px; }
+  /* ================================================================ charts */
+  .filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .filters .lbl { margin-right: 6px; }
+  .filters a.lbl { margin-left: 6px; }
+  .chart-head { display: flex; align-items: baseline; gap: 6px 12px; flex-wrap: wrap; }
+  .legend { display: flex; gap: 6px 16px; flex-wrap: wrap; margin: 10px 0 4px; font: var(--fs-xs)/1.4 var(--mono); color: var(--ink-2); letter-spacing: .02em; }
+  .legend .key { display: inline-block; width: 12px; height: 10px; border-radius: 1px; margin-right: 6px; vertical-align: -1px; }
+  .legend .key.line { height: 2px; width: 14px; vertical-align: 3px; }
+  .legend .key.runkey { background: color-mix(in srgb, var(--power) 16%, transparent); border-top: 2px solid var(--power); }
   .plot-wrap { position: relative; }
   /* pan-y, not none: a vertical swipe starting on a chart must still scroll the
      page on a phone, while a horizontal drag drives the crosshair */
   svg.plot { width: 100%; display: block; touch-action: pan-y; }
-  svg.plot:focus-visible { outline: 2px solid var(--series-gpu); outline-offset: 2px; }
   .loading { opacity: .55; }
-  .gridline { stroke: var(--grid); stroke-width: 1; }
-  .axisline { stroke: var(--axis); stroke-width: 1; }
-  .tick { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .gridline { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 3; }
+  .axisline { stroke: var(--rule-strong); stroke-width: 1; }
+  .tick { fill: var(--ink-3); font: 10.5px var(--mono); font-variant-numeric: tabular-nums; }
   .tick.y { text-anchor: end; }
   /* The halo keeps a label readable where a series line runs behind it. */
-  .dlabel { fill: var(--text-secondary); font-size: 11.5px; font-weight: 600;
-            paint-order: stroke; stroke: var(--surface-1); stroke-width: 4px; stroke-linejoin: round; }
-  .band-gpu { fill: var(--series-gpu); }
-  .band-cpu { fill: var(--series-cpu); }
-  .band-other { fill: var(--series-other); }
-  .edge-gpu { stroke: var(--series-gpu); }
-  .edge-cpu { stroke: var(--series-cpu); }
-  .edge-other { stroke: var(--series-other); }
-  .edge { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
-  .bar { fill: var(--series-gpu); }
-  .bar.hot { fill: var(--series-cpu); }
-  .crosshair { stroke: var(--text-muted); stroke-width: 1; }
-  .cdot { stroke: var(--surface-1); stroke-width: 2; }
+  .dlabel { fill: var(--ink); font: 700 11px var(--mono);
+            paint-order: stroke; stroke: var(--panel); stroke-width: 4px; stroke-linejoin: round; }
+  .runband { fill: var(--power); fill-opacity: .07; }
+  .runedge { stroke: var(--power); stroke-width: 2; stroke-opacity: .7; }
+  .runlabel { fill: var(--ink-2); font: 600 10px var(--mono); letter-spacing: .06em;
+              paint-order: stroke; stroke: var(--panel); stroke-width: 3px; stroke-linejoin: round; }
+  .band-gpu { fill: var(--gpu); } .band-cpu { fill: var(--cpu); } .band-rest { fill: var(--rest); }
+  .edge-gpu { stroke: var(--gpu); } .edge-cpu { stroke: var(--cpu); } .edge-rest { stroke: var(--rest); }
+  .edge { fill: none; stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+  .bar { fill: var(--power); }
+  .crosshair { stroke: var(--ink-3); stroke-width: 1; }
+  .cdot { stroke: var(--panel); stroke-width: 2; }
   .tooltip {
     position: absolute; pointer-events: none; opacity: 0; transition: opacity .12s;
-    background: var(--surface-1); border: 1px solid var(--border); border-radius: 9px;
-    padding: 9px 11px; box-shadow: 0 6px 20px rgba(0,0,0,.18); min-width: 148px; z-index: 5;
+    background: var(--panel); border: 1px solid var(--rule-strong); border-radius: var(--r-sm);
+    padding: 8px 10px; box-shadow: 0 8px 24px rgba(0,0,0,.22); min-width: 150px; z-index: 5;
   }
   .tooltip.show { opacity: 1; }
-  .tt-when { font-size: 11.5px; color: var(--text-muted); margin-bottom: 6px;
-             font-variant-numeric: tabular-nums; }
-  .tt-row { display: flex; align-items: baseline; gap: 7px; margin-top: 3px; font-size: 12.5px; }
-  .tt-row .k { width: 14px; height: 2px; border-radius: 2px; flex: none; }
-  .tt-row .v { font-weight: 600; font-variant-numeric: tabular-nums; }
-  .tt-row .n { color: var(--text-secondary); }
-  .tt-row.total { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 5px; }
+  .tt-when { font: 600 10.5px var(--mono); letter-spacing: .06em; color: var(--ink-3); margin-bottom: 6px; text-transform: uppercase; }
+  .tt-row { display: flex; align-items: baseline; gap: 7px; margin-top: 3px; font: var(--fs-sm) var(--mono); }
+  .tt-row .k { width: 12px; height: 3px; flex: none; }
+  .tt-row .v { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tt-row .v.money { color: var(--money); }
+  .tt-row .n { color: var(--ink-3); font-family: var(--sans); }
+  .tt-row.total { border-top: 1px solid var(--rule); margin-top: 6px; padding-top: 5px; }
 
-  /* ---- tables ---- */
-  table { border-collapse: collapse; width: 100%; font-size: 12.5px;
-          font-variant-numeric: tabular-nums; }
-  th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--grid); }
-  th:first-child, td:first-child { text-align: left; }
-  th { color: var(--text-muted); font-weight: 600; font-size: 11.5px;
-       text-transform: uppercase; letter-spacing: .05em; }
+  /* ================================================================ tables */
   .table-scroll { max-height: 320px; overflow: auto; margin-top: 10px; }
-  .hidden { display: none; }
-  footer { margin-top: 26px; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
-  code { font-size: 11.5px; background: var(--surface-1); border: 1px solid var(--border);
-         border-radius: 4px; padding: 1px 4px; }
-  /* ---- settings dialog ---- */
+  table { border-collapse: collapse; width: 100%; font: var(--fs-sm)/1.4 var(--mono); font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; padding-left: 0; }
+  th:last-child, td:last-child { padding-right: 0; }
+  th { font: 600 10.5px/1.3 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3);
+       position: sticky; top: 0; background: var(--panel); }
+  tbody tr:hover td { background: var(--panel-2); }
+  td.money { color: var(--money); font-weight: 600; }
+  tr.total td { font-weight: 700; border-bottom: 0; border-top: 1px solid var(--rule-strong); }
+  td.wrap { white-space: normal; }
+  .empty { font-size: var(--fs-sm); color: var(--ink-3); margin-top: 6px; }
+  .two { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; }
+
+  footer { margin-top: 10px; font: var(--fs-xs)/1.7 var(--mono); color: var(--ink-3); max-width: 110ch; }
+
+  /* ================================================================ settings dialog */
   dialog#settings {
-    width: min(620px, calc(100vw - 24px)); max-height: calc(100vh - 32px); padding: 0;
-    color: var(--text-primary); background: var(--surface-1);
-    border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.25);
+    width: min(640px, calc(100vw - 24px)); max-height: calc(100vh - 32px); padding: 0;
+    color: var(--ink); background: var(--panel);
+    border: 1px solid var(--rule-strong); border-radius: var(--r); box-shadow: 0 16px 48px rgba(0,0,0,.35);
   }
-  dialog#settings::backdrop { background: rgba(0,0,0,.35); }
-  #set-form { padding: 16px 18px; }
-  #set-form h2 { font-size: 15px; font-weight: 600; margin: 0 0 6px; }
+  dialog#settings::backdrop { background: rgba(4, 10, 8, .55); }
+  #set-form { padding: 18px 20px 16px; }
+  .dlg-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .dlg-head svg { width: 26px; height: 26px; }
+  #set-form h2 { font: 700 15px/1 var(--mono); letter-spacing: .02em; margin: 0; }
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--rule-strong); margin-bottom: 16px; }
+  .tabs [role="tab"] {
+    border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none;
+    padding: 9px 14px 8px; margin-bottom: -1px; color: var(--ink-3);
+  }
+  .tabs [role="tab"][aria-selected="true"] { color: var(--ink); border-bottom-color: var(--power); }
+  .tabs [role="tab"]:hover { color: var(--ink); }
   #set-form fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
-  #set-form fieldset fieldset { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 14px; }
-  #set-form legend { padding: 0; margin-bottom: 8px; }
-  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px 16px; }
-  .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-  .field[hidden] { display: none; }
-  .field > .lrow { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; color: var(--text-secondary); }
+  .pane-intro { margin: 0 0 12px; }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px 18px; }
+  .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .field[hidden], .bill[hidden] { display: none; }
+  .field > .lrow { display: flex; gap: 8px; align-items: baseline; font-size: var(--fs-sm); color: var(--ink-2); font-weight: 500; }
   .field input:not([type=checkbox]), .field select, .bill input {
-    font: inherit; color: var(--text-primary); background: var(--plane);
-    border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px; width: 100%;
+    font: 13px/1.3 var(--mono); color: var(--ink); background: var(--panel-2);
+    border: 1px solid var(--rule-strong); border-radius: var(--r-sm); padding: 8px 10px; width: 100%;
+    -webkit-appearance: none; appearance: none;
   }
-  .field input:focus-visible, .field select:focus-visible, .bill input:focus-visible,
-  .reset:focus-visible, summary:focus-visible { outline: 2px solid var(--series-gpu); outline-offset: 1px; }
-  .field.check { flex-direction: row; align-items: center; gap: 8px; font-size: 12.5px; }
-  .hint { font-size: 11.5px; color: var(--text-muted); }
-  .reset { font-size: 11px; padding: 0 6px; border-radius: 5px; }
-  .bill { grid-column: 1 / -1; font-size: 12.5px; color: var(--text-secondary); }
-  .bill summary { cursor: pointer; color: var(--text-secondary); }
-  .bill .fields { margin-top: 8px; }
-  .set-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 16px; }
-  #set-err { color: var(--status-critical); font-size: 12.5px; }
-  #set-ro { font-size: 12.5px; color: var(--text-secondary); border-left: 3px solid var(--status-warning);
-            padding: 4px 9px; margin: 0 0 8px; }
-  @media (max-width: 720px) { .hero { grid-template-columns: 1fr; } .hero-num { font-size: 46px; } }
+  .field select {
+    padding-right: 28px; cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23849a90' stroke-width='1.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center; background-size: 10px 6px;
+  }
+  .field input:hover, .field select:hover { border-color: var(--ink-3); }
+  .field input:focus-visible, .field select:focus-visible, .bill input:focus-visible {
+    outline: 2px solid var(--power); outline-offset: 0; border-color: var(--power);
+  }
+  .field input:disabled, .field select:disabled { opacity: .6; cursor: not-allowed; }
+  .field.check { flex-direction: row; align-items: center; gap: 10px; }
+  .field.check input { width: 18px; height: 18px; accent-color: var(--power); margin: 0; }
+  .hint { font-size: 11.5px; line-height: 1.45; color: var(--ink-3); }
+  .reset { font-size: 10px; padding: 3px 6px; margin-left: auto; }
+  .bill { grid-column: 1 / -1; font-size: var(--fs-sm); color: var(--ink-2);
+          border: 1px dashed var(--rule-strong); border-radius: var(--r-sm); padding: 8px 12px; }
+  .bill summary { cursor: pointer; font: 600 11.5px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+  .bill[open] summary { margin-bottom: 10px; }
+  .bill .fields { margin-bottom: 8px; }
+  .set-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 18px;
+                 padding-top: 14px; border-top: 1px solid var(--rule); }
+  #set-err { color: var(--crit); font-size: var(--fs-sm); }
+  #set-ro { font-size: var(--fs-sm); color: var(--ink-2); border-left: 3px solid var(--warn);
+            padding: 4px 10px; margin: 0 0 12px; }
+
+  /* ================================================================ widths */
+  @media (max-width: 860px) {
+    .hero-grid { grid-template-columns: 1fr; }
+    .dial-col { max-width: 420px; width: 100%; margin: 0 auto; }
+    .two { grid-template-columns: 1fr; }
+  }
   @media (max-width: 560px) {
-    body { padding: 14px 12px 40px; }
-    .card { padding: 13px 14px; border-radius: 10px; }
-    .hero-num { font-size: 42px; }
-    .rate-row { gap: 18px; }
-    .tile-val { font-size: 24px; }
-    header { gap: 8px; row-gap: 6px; }
-    .filters { gap: 6px; margin: 20px 0 12px; }
-    .filters button { padding: 5px 9px; }
-    .legend { gap: 12px; font-size: 12px; }
+    body { padding: 12px 12px 40px; }
+    .wrap { gap: 12px; }
+    .panel { padding: 13px 14px; }
+    .hero { padding: 14px 14px 14px; }
+    .srow, .split-scale { grid-template-columns: 38px minmax(0, 1fr) 62px; gap: 10px; }
+    .say { font-size: 16px; }
+    .host { flex-basis: 100%; order: 3; }
+    .icell { padding: 9px 12px; }
+    .amt { font-size: 23px; }
+    .idle-call strong { font-size: 28px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; animation: none !important; }
   }
 </style>
 </head>
-<body>
+<body data-state="unreach">
 <div class="wrap">
 
-<header>
-  <h1>powermon</h1>
+<header class="top">
+  <div class="brand">
+    <!-- The Watcher, from the app icon: its eye is a meter whose needle follows the load. -->
+    <svg class="mascot" id="mascot" viewBox="0 0 100 100" aria-hidden="true">
+      <polygon class="m-bolt" points="52.5,0.5 39.1,20.7 47.9,20.7 46.6,37.5 60.9,16.5 52.1,16.5"/>
+      <ellipse class="m-feet" cx="32" cy="93.5" rx="12" ry="6.5"/><ellipse class="m-feet" cx="68" cy="93.5" rx="12" ry="6.5"/>
+      <circle class="m-body" cx="50" cy="60" r="36"/>
+      <circle class="m-eye" cx="50" cy="54" r="21"/>
+      <circle class="m-pupil" cx="50" cy="54" r="11"/>
+      <g class="m-needle-g" id="m-needle"><line class="m-needle" x1="50" y1="54" x2="50" y2="35" stroke-width="5.5"/></g>
+      <path class="m-smile" d="M41.8 83.8 A9 9 0 0 0 58.2 83.8" stroke-width="4"/>
+    </svg>
+    <h1 class="wordmark">powermon</h1>
+  </div>
+  <span class="chip" id="state-chip" role="status" aria-label="State: connecting">Connecting</span>
   <span class="host" id="host">-</span>
-  <span class="pill" id="live"><span class="dot" id="dot"></span><span id="live-txt">connecting</span></span>
-  <span class="pill" id="cpu-src" title="How CPU power is obtained">-</span>
-  <span class="pill" id="tariff-pill">-</span>
   <span class="spacer"></span>
+  <span class="pill" id="cpu-src" title="How CPU power is obtained"></span>
+  <span class="pill" id="tariff-pill"></span>
   <button id="settings-btn" aria-haspopup="dialog">Settings</button>
   <button id="theme-btn" title="Switch light / dark">Theme</button>
 </header>
@@ -288,11 +425,18 @@
      whitelists; values come from GET api/settings, changes go back by POST. -->
 <dialog id="settings" aria-labelledby="set-title">
 <form id="set-form" novalidate>
-  <h2 id="set-title">Settings</h2>
+  <div class="dlg-head">
+    <h2 id="set-title">Settings</h2>
+  </div>
   <p id="set-ro" hidden></p>
+  <div class="tabs" role="tablist" aria-label="Settings sections">
+    <button type="button" role="tab" id="tab-price" aria-controls="pane-price" aria-selected="true">Price</button>
+    <button type="button" role="tab" id="tab-alerts" aria-controls="pane-alerts" aria-selected="false" tabindex="-1">Alerts</button>
+    <button type="button" role="tab" id="tab-sleep" aria-controls="pane-sleep" aria-selected="false" tabindex="-1">Sleep</button>
+  </div>
   <fieldset id="set-fields">
-    <fieldset>
-      <legend class="label">Electricity price</legend>
+    <fieldset class="pane" id="pane-price" role="tabpanel" aria-labelledby="tab-price">
+      <legend class="sr-only">Electricity price</legend>
       <div class="fields">
         <div class="field"><span class="lrow"><label for="f-mode">Pricing</label></span>
           <select id="f-mode" data-key="tariff.mode">
@@ -349,9 +493,9 @@
       </div>
     </fieldset>
 
-    <fieldset>
-      <legend class="label">Alerts</legend>
-      <p class="hint" style="margin:0 0 8px">Empty or 0 turns each one off.</p>
+    <fieldset class="pane" id="pane-alerts" role="tabpanel" aria-labelledby="tab-alerts" hidden>
+      <legend class="sr-only">Alerts</legend>
+      <p class="hint pane-intro">Empty or 0 turns each one off.</p>
       <div class="fields">
         <div class="field"><span class="lrow"><label for="f-idle">Idle draw above (W)</label></span>
           <input id="f-idle" type="number" step="any" min="0" data-key="alerts.idle_w">
@@ -382,8 +526,8 @@
       </div>
     </fieldset>
 
-    <fieldset>
-      <legend class="label">Sleep when idle</legend>
+    <fieldset class="pane" id="pane-sleep" role="tabpanel" aria-labelledby="tab-sleep" hidden>
+      <legend class="sr-only">Sleep when idle</legend>
       <div class="fields">
         <div class="field"><span class="lrow"><label for="f-sleep">Sleep after idle (minutes)</label></span>
           <input id="f-sleep" type="number" step="any" min="0" data-key="suspend.after_idle_min">
@@ -393,11 +537,11 @@
         <div class="field check"><input id="f-sleepuser" type="checkbox" data-key="suspend.skip_if_logged_in">
           <span class="lrow"><label for="f-sleepuser">Not while someone is logged in</label></span></div>
       </div>
-      <p class="hint">The command that puts the machine to sleep can only be changed in config.toml.</p>
+      <p class="hint" style="margin:14px 0 0">The command that puts the machine to sleep can only be changed in config.toml.</p>
     </fieldset>
   </fieldset>
   <div class="set-actions">
-    <button type="submit" id="set-save">Save</button>
+    <button type="submit" id="set-save" class="primary">Save</button>
     <button type="button" id="set-cancel">Close</button>
     <span id="set-err" role="alert"></span>
   </div>
@@ -407,131 +551,149 @@
 <!-- anything that makes the numbers below less than the whole truth -->
 <div id="banners" role="status" aria-live="polite"></div>
 
-<!-- hero + live rates -->
-<section class="card" aria-labelledby="hero-label" style="margin-bottom:14px">
-  <div class="label" id="hero-label">Drawing now (at the wall)</div>
-  <div class="hero">
-    <div>
-      <div class="hero-num"><span id="hero-w">-</span><span class="u">W</span></div>
-      <div class="rate-row">
-        <div>
-          <span class="label">Cost rate</span>
-          <span class="rate-big" id="rate-now">-</span>
-        </div>
-        <div>
-          <span class="label">If it ran all month</span>
-          <span class="rate-big" id="rate-month">-</span>
-        </div>
-        <div>
-          <span class="label">State</span>
-          <span class="rate-big" id="state">-</span>
-        </div>
-        <div>
-          <span class="label">Idle cost this month</span>
-          <span class="rate-big" id="idle-cost">-</span>
-        </div>
-      </div>
-      <div class="hero-sub" id="hero-sub">-</div>
+<!-- the hero: one meter, where the watts go, and one sentence -->
+<section class="panel hero" aria-labelledby="hero-label">
+  <div class="hero-grid">
+    <div class="dial-col">
+      <div class="lbl" id="hero-label">At the wall, now</div>
+      <svg class="dial live" id="dial" viewBox="0 0 300 216" role="img" aria-label="Power at the wall: no reading yet">
+        <g id="dial-scale"></g>
+        <path class="value" id="dial-value" pathLength="1000" style="stroke-dasharray: 0 1000"/>
+        <g id="dial-marks"></g>
+        <g class="needle" id="dial-needle">
+          <polygon points="146.5,158 150,34 153.5,158"/>
+          <line class="tipline" x1="150" y1="33" x2="150" y2="58"/>
+        </g>
+        <circle class="hub" cx="150" cy="142" r="10"/><circle class="hub-in" cx="150" cy="142" r="3.5"/>
+      </svg>
+      <div class="readout live" aria-hidden="true"><span id="hero-w">-</span><span class="u">W</span></div>
+      <div class="dial-legend" id="dial-legend"></div>
     </div>
-    <div>
-      <svg class="hero-spark" id="spark" viewBox="0 0 600 68" preserveAspectRatio="none"
-           role="img" aria-label="Total power over the last few minutes"></svg>
-      <div class="meter-sub" id="spark-note">last 3 minutes</div>
+    <div class="side-col">
+      <div class="lbl">Where it goes</div>
+      <div class="split live" id="split"></div>
+      <div class="split-scale" aria-hidden="true"><span></span><span><span>0</span><span id="split-max">-</span></span><span></span></div>
+      <div class="note" id="split-note">No reading yet.</div>
+      <div class="spark-box">
+        <div class="lbl" id="spark-note">Total draw</div>
+        <svg class="hero-spark live" id="spark" viewBox="0 0 600 84" preserveAspectRatio="none"
+             role="img" aria-label="Total power over the last few minutes"></svg>
+      </div>
     </div>
   </div>
+  <p class="say" id="say">Waiting for the first reading.</p>
+  <div class="hero-foot"><span class="note num" id="hero-sub"></span></div>
+</section>
+
+<!-- money: amber, every figure here is a cost -->
+<section class="panel" aria-labelledby="money-label">
+  <div class="panel-head"><h2 class="title" id="money-label">Cost</h2><span class="note" id="money-note"></span></div>
+  <div class="money-grid" id="tiles"></div>
+  <div class="idle-call" id="idle-call"><strong id="idle-cost">-</strong><span id="idle-text">Idle cost this month appears with the first reading.</span></div>
+</section>
+
+<!-- instruments: smaller readouts for everything that is not watts or money -->
+<section aria-labelledby="inst-label">
+  <h2 class="sr-only" id="inst-label">Other readings</h2>
+  <div class="strip live"><div class="strip-in" id="meters"></div></div>
+  <div class="table-scroll" id="gpu-devs"></div>
 </section>
 
 <!-- all machines (only when peers are configured) -->
-<section class="card hidden" id="peers-card" style="margin-bottom:14px" aria-labelledby="t6">
-  <div class="chart-head"><span class="chart-title" id="t6">All machines</span></div>
+<section class="panel hidden" id="peers-card" aria-labelledby="t6">
+  <div class="chart-head"><h2 class="title" id="t6">All machines</h2></div>
   <div class="table-scroll" id="peers"></div>
 </section>
 
-<!-- meters -->
-<div class="grid meters" style="margin-bottom:14px" id="meters"></div>
-
-<!-- period totals -->
-<div class="grid tiles" id="tiles"></div>
-
 <!-- history -->
 <div class="filters" role="group" aria-label="Time range for the history charts below">
-  <span class="label">History</span>
-  <button data-range="24h" aria-pressed="true">Last 24 hours</button>
+  <span class="lbl">History</span>
+  <button data-range="24h" aria-pressed="true">24 hours</button>
   <button data-range="7d" aria-pressed="false">7 days</button>
   <button data-range="30d" aria-pressed="false">30 days</button>
   <button data-range="90d" aria-pressed="false">90 days</button>
-  <a class="label" id="hist-csv" href="api/history?range=24h&amp;format=csv">CSV</a>
+  <a class="lbl" id="hist-csv" href="api/history?range=24h&amp;format=csv">CSV</a>
   <span class="spacer"></span>
-  <span class="chart-note" id="hist-note"></span>
+  <span class="note" id="hist-note"></span>
 </div>
 
-<section class="card chart-card" aria-labelledby="t1">
+<section class="panel" aria-labelledby="t1">
   <div class="chart-head">
-    <span class="chart-title" id="t1">Power draw</span>
-    <span class="chart-note" id="n1">watts at the wall, stacked by component</span>
+    <h2 class="title" id="t1">Power draw</h2>
+    <span class="note" id="n1">watts at the wall, stacked by component</span>
     <span class="spacer"></span>
     <button class="tbl-btn" data-target="tbl1" aria-pressed="false">Table</button>
   </div>
   <div class="legend" id="leg1">
-    <span><span class="key" style="background:var(--series-gpu)"></span>GPU</span>
-    <span><span class="key" style="background:var(--series-cpu)"></span>CPU</span>
-    <span><span class="key" style="background:var(--series-other)"></span>Board, RAM, drives + PSU loss</span>
+    <span><span class="key" style="background:var(--gpu)"></span>GPU</span>
+    <span><span class="key" style="background:var(--cpu)"></span>CPU</span>
+    <span><span class="key" style="background:var(--rest)"></span>Board, RAM, drives + PSU loss</span>
+    <span><span class="key runkey"></span>Training run</span>
   </div>
   <div class="plot-wrap">
     <svg class="plot" id="plot1" viewBox="0 0 1000 300" tabindex="0" role="img"
-         aria-label="Stacked power draw over time by component"></svg>
+         aria-label="Stacked power draw over time by component, with training runs shaded"></svg>
     <div class="tooltip" id="tt1"></div>
   </div>
   <div class="table-scroll hidden" id="tbl1"></div>
 </section>
 
-<section class="card chart-card" aria-labelledby="t2">
-  <div class="chart-head">
-    <span class="chart-title" id="t2">Energy and cost</span>
-    <span class="chart-note" id="n2"></span>
-    <span class="spacer"></span>
-    <button class="tbl-btn" data-target="tbl2" aria-pressed="false">Table</button>
-  </div>
-  <div class="plot-wrap">
-    <svg class="plot" id="plot2" viewBox="0 0 1000 220" tabindex="0" role="img"
-         aria-label="Energy consumed per period"></svg>
-    <div class="tooltip" id="tt2"></div>
-  </div>
-  <div class="table-scroll hidden" id="tbl2"></div>
-</section>
+<div class="two">
+  <section class="panel" aria-labelledby="t2">
+    <div class="chart-head">
+      <h2 class="title" id="t2">Energy</h2>
+      <span class="note" id="n2"></span>
+      <span class="spacer"></span>
+      <button class="tbl-btn" data-target="tbl2" aria-pressed="false">Table</button>
+    </div>
+    <div class="legend">
+      <span><span class="key" style="background:var(--power)"></span>kWh</span>
+      <span><span class="key" style="background:var(--money)"></span>cost, on hover</span>
+    </div>
+    <div class="plot-wrap">
+      <svg class="plot" id="plot2" viewBox="0 0 1000 220" tabindex="0" role="img"
+           aria-label="Energy consumed per period"></svg>
+      <div class="tooltip" id="tt2"></div>
+    </div>
+    <div class="table-scroll hidden" id="tbl2"></div>
+  </section>
 
-<section class="card chart-card" aria-labelledby="t3" id="temp-card">
-  <div class="chart-head">
-    <span class="chart-title" id="t3">Temperatures</span>
-    <span class="chart-note" id="n3">degrees Celsius</span>
-    <span class="spacer"></span>
-    <button class="tbl-btn" data-target="tbl3" aria-pressed="false">Table</button>
-  </div>
-  <div class="legend">
-    <span><span class="key line" style="background:var(--series-gpu)"></span>GPU</span>
-    <span><span class="key line" style="background:var(--series-cpu)"></span>CPU</span>
-  </div>
-  <div class="plot-wrap">
-    <svg class="plot" id="plot3" viewBox="0 0 1000 200" tabindex="0" role="img"
-         aria-label="GPU and CPU temperature over time"></svg>
-    <div class="tooltip" id="tt3"></div>
-  </div>
-  <div class="table-scroll hidden" id="tbl3"></div>
-</section>
+  <section class="panel" aria-labelledby="t3" id="temp-card">
+    <div class="chart-head">
+      <h2 class="title" id="t3">Temperatures</h2>
+      <span class="note" id="n3">°C</span>
+      <span class="spacer"></span>
+      <button class="tbl-btn" data-target="tbl3" aria-pressed="false">Table</button>
+    </div>
+    <div class="legend">
+      <span><span class="key line" style="background:var(--gpu)"></span>GPU</span>
+      <span><span class="key line" style="background:var(--cpu)"></span>CPU</span>
+    </div>
+    <div class="plot-wrap">
+      <svg class="plot" id="plot3" viewBox="0 0 1000 220" tabindex="0" role="img"
+           aria-label="GPU and CPU temperature over time"></svg>
+      <div class="tooltip" id="tt3"></div>
+    </div>
+    <div class="table-scroll hidden" id="tbl3"></div>
+  </section>
+</div>
 
-<section class="card" style="margin-top:14px" aria-labelledby="t5">
-  <div class="chart-head">
-    <span class="chart-title" id="t5">Training runs</span>
-    <a class="label" href="api/runs?format=csv">CSV</a>
-  </div>
-  <div id="runs-empty" class="meter-sub">No runs recorded yet.</div>
-  <div class="table-scroll hidden" id="runs"></div>
-</section>
+<div class="two">
+  <section class="panel" aria-labelledby="t5">
+    <div class="chart-head">
+      <h2 class="title" id="t5">Training runs</h2>
+      <span class="spacer"></span>
+      <a class="lbl" href="api/runs?format=csv">CSV</a>
+    </div>
+    <div id="runs-empty" class="empty">No runs recorded yet.</div>
+    <div class="table-scroll hidden" id="runs"></div>
+  </section>
 
-<section class="card" style="margin-top:14px" aria-labelledby="t4">
-  <div class="chart-head"><span class="chart-title" id="t4">On the GPU right now</span></div>
-  <div id="procs" class="meter-sub">-</div>
-</section>
+  <section class="panel" aria-labelledby="t4">
+    <div class="chart-head"><h2 class="title" id="t4">On the GPU right now</h2></div>
+    <div id="procs" class="empty">-</div>
+  </section>
+</div>
 
 <footer>
   <span id="model-note"></span>
@@ -551,6 +713,7 @@ const fmt = {
   money: (v) => v == null ? "-" : (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(2)),
   money3: (v) => v == null ? "-" : v.toFixed(3),
   clock: (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+  clockS: (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
   day: (ts) => new Date(ts * 1000).toLocaleDateString([], { day: "numeric", month: "short" }),
   dayTime: (ts) => new Date(ts * 1000).toLocaleString([],
       { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }),
@@ -561,6 +724,8 @@ const fmt = {
   },
 };
 let SYM = "€";
+let NO_TARIFF = false;
+const cash = (v) => v == null ? "-" : SYM + fmt.money(v);
 
 /* ---------------------------------------------------------------- svg helpers */
 function el(tag, attrs, parent) {
@@ -584,69 +749,6 @@ function niceTicks(max, count) {
   for (let v = 0; v <= top + step * 1e-6; v += step) out.push(+v.toFixed(6));
   return out;
 }
-
-/* ---------------------------------------------------------------- state */
-let RANGE = "24h";
-let SERIES = null;      // history payload
-let NOW = null;         // /api/now payload
-
-/* ---------------------------------------------------------------- live section */
-function meter(label, value, unitTxt, pct, sub) {
-  const cls = pct >= 90 ? "crit" : pct >= 75 ? "warn" : "";
-  const div = document.createElement("div");
-  div.className = "card";
-  const head = document.createElement("div");
-  head.className = "meter-head";
-  const l = document.createElement("span"); l.className = "label"; l.textContent = label;
-  const v = document.createElement("span"); v.className = "meter-val";
-  v.textContent = value + (unitTxt ? " " + unitTxt : "");
-  head.append(l, v);
-  const track = document.createElement("div"); track.className = "track";
-  const fill = document.createElement("div");
-  fill.className = "fill " + cls;
-  fill.style.width = Math.max(0, Math.min(100, pct || 0)) + "%";
-  track.appendChild(fill);
-  const s = document.createElement("div"); s.className = "meter-sub"; s.textContent = sub;
-  div.append(head, track, s);
-  return div;
-}
-
-function tile(label, value, unit, sub) {
-  const div = document.createElement("div");
-  div.className = "card";
-  const l = document.createElement("div"); l.className = "label"; l.textContent = label;
-  const v = document.createElement("div"); v.className = "tile-val";
-  v.textContent = value;
-  if (unit) { const u = document.createElement("span"); u.className = "u"; u.textContent = unit; v.appendChild(u); }
-  const s = document.createElement("div"); s.className = "tile-sub"; s.textContent = sub;
-  div.append(l, v, s);
-  return div;
-}
-
-function drawSpark(svg, values, colorVar) {
-  svg.textContent = "";
-  const pts = values.filter((v) => v != null);
-  if (pts.length < 2) return;
-  const W = 600, H = 68, pad = 4;
-  const max = Math.max(...pts) * 1.12 || 1;
-  const min = Math.min(0, Math.min(...pts));
-  const x = (i) => pad + i * (W - pad * 2) / (values.length - 1);
-  const y = (v) => H - pad - (v - min) / (max - min) * (H - pad * 2);
-  let d = "", area = "";
-  values.forEach((v, i) => {
-    if (v == null) return;
-    d += (d ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1);
-  });
-  area = d + `L${x(values.length - 1).toFixed(1)} ${H - pad}L${x(0).toFixed(1)} ${H - pad}Z`;
-  el("path", { d: area, fill: `var(${colorVar})`, "fill-opacity": .12 }, svg);
-  el("path", { d, class: "edge", stroke: `var(${colorVar})` }, svg);
-  const last = values.length - 1;
-  if (values[last] != null) {
-    el("circle", { cx: x(last), cy: y(values[last]), r: 4,
-                   fill: `var(${colorVar})`, class: "cdot" }, svg);
-  }
-}
-
 /* el() above builds SVG nodes for the charts; this is its HTML counterpart. */
 function hel(tag, cls, parent, txt) {
   const node = document.createElement(tag);
@@ -656,6 +758,364 @@ function hel(tag, cls, parent, txt) {
   return node;
 }
 
+/* ---------------------------------------------------------------- state */
+let RANGE = "24h";
+let SERIES = null;      // history payload
+let NOW = null;         // /api/now payload
+let RUNS = [];          // /api/runs payload, for the bands on the power chart
+let IDLE_W = 0;         // idle alert threshold from api/settings, 0 when unknown or off
+
+/* ---------------------------------------------------------------- the dial
+   0 W at -120 degrees, full scale at +120. The full scale is a round number
+   just above the highest draw ever recorded, so the needle's position means
+   something: near the top is near the most this machine has ever drawn. */
+const DIAL = { cx: 150, cy: 142, r: 112, max: 0 };
+function dialPt(deg, r) {
+  const a = deg * Math.PI / 180;
+  return [DIAL.cx + r * Math.sin(a), DIAL.cy - r * Math.cos(a)];
+}
+function arc(a0, a1, r) {
+  const [x0, y0] = dialPt(a0, r), [x1, y1] = dialPt(a1, r);
+  return `M${x0.toFixed(2)} ${y0.toFixed(2)}A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+}
+const dialDeg = (w) => -120 + 240 * Math.max(0, Math.min(1, (w || 0) / DIAL.max));
+const short = (v) => v >= 1000 ? +(v / 1000).toFixed(2) + "k" : String(v);
+
+/* An empty face until the first reading: no needle, no numerals, nothing invented. */
+function dialFace() {
+  const g = $("dial-scale");
+  g.textContent = "";
+  el("path", { class: "track", d: arc(-120, 120, DIAL.r + 6) }, g);
+  el("path", { class: "ring", d: arc(-120, 120, DIAL.r) }, g);
+  return g;
+}
+function buildDialScale(ticks) {
+  DIAL.max = ticks[ticks.length - 1];
+  const g = dialFace();
+  $("dial").classList.add("scaled");
+  $("dial-value").setAttribute("d", arc(-120, 120, DIAL.r + 6));
+  const step = ticks[1] - ticks[0];
+  const lead = +(step / Math.pow(10, Math.floor(Math.log10(step)))).toFixed(2);
+  const minor = step / (lead === 2 ? 4 : 5);
+  for (let v = 0; v <= DIAL.max + 1e-6; v += minor) {
+    const major = ticks.some((t) => Math.abs(t - v) < minor / 2);
+    const a = dialDeg(v);
+    const [x1, y1] = dialPt(a, DIAL.r), [x2, y2] = dialPt(a, DIAL.r - (major ? 11 : 5));
+    el("line", { x1, y1, x2, y2, class: major ? "major" : "minor" }, g);
+    if (major) {
+      const [tx, ty] = dialPt(a, DIAL.r + 22);
+      text(g, tx.toFixed(1), (ty + 4).toFixed(1), short(Math.round(v)), "numeral");
+    }
+  }
+  text(g, DIAL.cx, DIAL.cy - 40, "WATTS", "unit");
+  $("split-max").textContent = fmt.w(DIAL.max) + " W";
+}
+
+function updateDial(d) {
+  const T = d.totals || {}, total = d.power && d.power.total_w;
+  const peak = (p) => (p && p.peak_w != null ? p.peak_w : null);
+  const allPeak = peak(T.all), todayPeak = peak(T.today);
+  const highest = Math.max(allPeak || 0, peak(T.month) || 0, todayPeak || 0, total || 0, IDLE_W || 0);
+  const ticks = niceTicks(Math.max(highest * 1.05, 100), 6);
+  if (ticks[ticks.length - 1] !== DIAL.max) buildDialScale(ticks);
+
+  const frac = total == null ? 0 : Math.max(0, Math.min(1, total / DIAL.max));
+  $("dial-needle").style.transform = `rotate(${dialDeg(total)}deg)`;
+  $("dial-value").style.strokeDasharray = `${(frac * 1000).toFixed(1)} 1000`;
+  $("hero-w").textContent = fmt.w(total);
+
+  const g = $("dial-marks");
+  g.textContent = "";
+  const legend = $("dial-legend");
+  legend.textContent = "";
+  const key = (cls, words) => { const s = hel("span", null, legend); hel("span", cls, s); s.append(words); };
+  const said = [];
+  if (IDLE_W > 0) {
+    const a = dialDeg(IDLE_W), [x1, y1] = dialPt(a, DIAL.r - 14), [x2, y2] = dialPt(a, DIAL.r + 9);
+    el("line", { x1, y1, x2, y2, class: "mk-idle" }, g);
+    key("key-idle", `idle alert ${fmt.w(IDLE_W)} W`);
+    said.push(`idle alert at ${fmt.w(IDLE_W)} W`);
+  }
+  if (todayPeak != null) {
+    const a = dialDeg(todayPeak);
+    const p = [dialPt(a, DIAL.r - 14), dialPt(a - 3.6, DIAL.r - 25), dialPt(a + 3.6, DIAL.r - 25)];
+    el("polygon", { points: p.map((q) => q.map((n) => n.toFixed(1)).join(",")).join(" "), class: "mk-today" }, g);
+    key("key-today", `today's peak ${fmt.w(todayPeak)} W`);
+    said.push(`today's peak ${fmt.w(todayPeak)} W`);
+  }
+  if (allPeak != null) {
+    const a = dialDeg(allPeak), [x1, y1] = dialPt(a, DIAL.r - 14), [x2, y2] = dialPt(a, DIAL.r + 9);
+    el("line", { x1, y1, x2, y2, class: "mk-all" }, g);
+    key("key-all", `highest recorded ${fmt.w(allPeak)} W`);
+    said.push(`highest recorded ${fmt.w(allPeak)} W`);
+  }
+  $("dial").setAttribute("aria-label",
+    `Power at the wall: ${fmt.w(total)} W, on a 0 to ${fmt.w(DIAL.max)} W scale`
+    + (said.length ? `; ${said.join("; ")}` : ""));
+}
+
+/* ---------------------------------------------------------------- where it goes */
+function renderSplit(d) {
+  const P = d.power || {}, g = d.gpu || {};
+  const box = $("split");
+  box.textContent = "";
+  const row = (name, w, color, mark, markTitle) => {
+    const r = hel("div", "srow", box);
+    hel("span", "k", r, name);
+    const led = hel("div", "led", r);
+    led.setAttribute("role", "img");
+    led.setAttribute("aria-label", `${name} ${fmt.w(w)} W of ${fmt.w(DIAL.max)} W scale`);
+    const fill = hel("i", null, led);
+    fill.style.setProperty("--c", `var(${color})`);
+    // Width set after insertion so the transition runs from the previous render's width.
+    const pct = Math.max(0, Math.min(100, 100 * (w || 0) / DIAL.max));
+    const prev = SPLIT_PREV[name] ?? 0;
+    fill.style.width = prev + "%";
+    requestAnimationFrame(() => { fill.style.width = pct + "%"; });
+    SPLIT_PREV[name] = pct;
+    if (mark > 0 && mark <= DIAL.max) {
+      const b = hel("b", null, led);
+      b.style.left = `calc(${100 * mark / DIAL.max}% - 1px)`;
+      b.title = markTitle;
+    }
+    hel("span", "v", r, w == null ? "-" : fmt.w(w) + " W");
+  };
+  if (g.present) row("GPU", P.gpu_w, "--gpu", g.limit_w, `power limit ${fmt.w(g.limit_w)} W`);
+  row("CPU", P.cpu_w, "--cpu");
+  row("REST", P.other_w, "--rest");
+  const bits = [];
+  if (g.present) {
+    bits.push(((g.count || 1) > 1 ? `${g.count} GPUs` : (g.name || "GPU"))
+      + (g.limit_w ? ` · limit ${fmt.w(g.limit_w)} W (marked)` : ""));
+  } else bits.push("No NVIDIA GPU detected");
+  bits.push("same scale as the dial");
+  $("split-note").textContent = bits.join(" · ");
+}
+const SPLIT_PREV = {};
+
+function drawSpark(svg, values, colorVar) {
+  svg.textContent = "";
+  const pts = (values || []).filter((v) => v != null);
+  if (pts.length < 2) return;
+  const W = 600, H = 84, pad = 4;
+  const max = Math.max(...pts) * 1.12 || 1;
+  const min = Math.min(0, Math.min(...pts));
+  const x = (i) => pad + i * (W - pad * 2) / (values.length - 1);
+  const y = (v) => H - pad - (v - min) / (max - min) * (H - pad * 2);
+  let d = "";
+  values.forEach((v, i) => {
+    if (v == null) return;
+    d += (d ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1);
+  });
+  const area = d + `L${x(values.length - 1).toFixed(1)} ${H - pad}L${x(0).toFixed(1)} ${H - pad}Z`;
+  el("path", { d: area, fill: `var(${colorVar})`, "fill-opacity": .12 }, svg);
+  el("path", { d, class: "edge", stroke: `var(${colorVar})` }, svg);
+}
+
+/* ---------------------------------------------------------------- instruments */
+/* pct draws a bar; cap marks it as a capacity, which turns warn/crit when nearly
+   full. A busy GPU at 98 % load is doing its job, so loads never turn red. */
+function instrument(parent, label, value, unit, sub, pct, color, cap) {
+  const c = hel("div", "icell", parent);
+  hel("div", "lbl", c, label);
+  const v = hel("div", "val", c, value);
+  if (unit && value !== "-") hel("span", "u", v, unit);
+  if (pct != null) {
+    const bar = hel("div", "bar", c);
+    const i = hel("i", !cap ? "" : pct >= 90 ? "crit" : pct >= 75 ? "warn" : "", bar);
+    i.style.width = Math.max(0, Math.min(100, pct)) + "%";
+    if (color) i.style.setProperty("--c", `var(${color})`);
+  }
+  if (sub) { const s = hel("div", "sub", c, sub); s.title = sub; }
+}
+
+function renderStrip(d) {
+  const m = $("meters");
+  m.textContent = "";
+  const g = d.gpu || {}, cpu = d.cpu || {}, mem = d.mem || {}, disk = d.disk || {}, net = d.net || {};
+  const many = (g.count || 1) > 1;
+  if (g.present) {
+    instrument(m, many ? "GPU load (busiest)" : "GPU load", fmt.w(g.util), "%",
+      `${fmt.w(g.clock_mhz)} MHz`, g.util || 0, "--gpu");
+    instrument(m, "GPU temp", fmt.w(g.temp), "°C", `fan ${fmt.w(g.fan)}%`);
+    instrument(m, many ? "GPU memory (total)" : "GPU memory", fmt.n1((g.mem_used || 0) / 1024), "GiB",
+      `of ${fmt.n1((g.mem_total || 0) / 1024)} GiB`, 100 * (g.mem_used || 0) / (g.mem_total || 1), "--gpu", true);
+  }
+  instrument(m, "CPU", fmt.n1(cpu.pct), "%",
+    `load ${cpu.load ? cpu.load[0].toFixed(2) : "-"}`, cpu.pct || 0, "--cpu");
+  instrument(m, "CPU temp", cpu.temp == null ? "-" : fmt.n1(cpu.temp), "°C",
+    cpu.cores ? `${cpu.cores} threads` : "");
+  instrument(m, "Memory", fmt.n1(mem.used_gib), "GiB", `of ${fmt.n1(mem.total_gib)} GiB`, mem.pct, "--rest", true);
+  instrument(m, "Disk (home)", fmt.n1(disk.used_gib), "GiB", `of ${fmt.n1(disk.total_gib)} GiB`, disk.pct, "--rest", true);
+  instrument(m, "Network", `${fmt.n1(net.rx_mbps)}/${fmt.n1(net.tx_mbps)}`, "Mb/s", "down / up");
+
+  // With one card the aggregate IS the card, so a breakdown would just
+  // repeat it. With several, the aggregate hides which one is working.
+  const box = $("gpu-devs");
+  box.textContent = "";
+  if (g.present && many) {
+    const list = g.devices || [];
+    // The header already names the model when they all match.
+    const mixed = new Set(list.map((x) => x.name)).size > 1;
+    hel("div", "lbl", box, "Per GPU").style.marginBottom = "2px";
+    const dash = (v, f, u) => v == null ? "—" : f(v) + u;   // an unreadable sensor shows a dash, never a zero
+    tableInto(box, ["GPU", "Power", "Load", "Temp", "Memory"],
+      list.map((dev) => [mixed ? `#${dev.index} ${dev.name || "GPU"}` : `#${dev.index}`,
+        dash(dev.power_w, fmt.w, " W"), dash(dev.util, fmt.w, "%"), dash(dev.temp, fmt.w, " °C"),
+        dash(dev.mem_used, (v) => fmt.n1(v / 1024), " GiB")]));
+  }
+}
+
+/* ---------------------------------------------------------------- money */
+function renderMoney(d) {
+  const T = d.totals || {}, P = d.power || {}, meta = d.meta || {};
+  const today = T.today || {}, month = T.month || {}, all = T.all || {};
+  const box = $("tiles");
+  box.textContent = "";
+  // Coverage is only worth the words when it is not total.
+  const cov = (p) => (p.coverage != null && p.coverage < 0.999) ? ` · ${fmt.w(100 * p.coverage)}% measured` : "";
+  // CO2 only when the server has a carbon factor; null means not configured.
+  const co2 = (kg) => (meta.co2_g_per_kwh == null || kg == null) ? ""
+    : ` · ${kg >= 100 ? kg.toFixed(0) : kg.toFixed(1)} kg CO2`;
+  const kwh = (p) => `${fmt.kwh(p)} kWh`;
+  const cell = (label, value, unit, sub) => {
+    const c = hel("div", "mcell", box);
+    hel("div", "lbl", c, label);
+    const v = hel("div", "amt" + (NO_TARIFF ? " plain" : ""), c, value);
+    if (unit) hel("span", "u", v, unit);
+    hel("div", "msub", c, sub);
+    return c;
+  };
+  if (NO_TARIFF) {
+    $("money-label").textContent = "Energy";
+    $("money-note").textContent = "No tariff set, so no costs.";
+    cell("Today", fmt.kwh(today.kwh), "kWh", `peak ${fmt.w(today.peak_w)} W${cov(today)}${co2(today.co2_kg)}`);
+    cell("Month to date", fmt.kwh(month.kwh), "kWh", `${fmt.dur(month.hours * 3600)} recorded${cov(month)}${co2(month.co2_kg)}`);
+    cell("Projected month", fmt.kwh(month.projected_30d_kwh), "kWh", `30 days at the average draw${co2(month.projected_30d_co2_kg)}`);
+    cell("All time", fmt.kwh(all.kwh), "kWh", `over ${fmt.dur(all.hours * 3600)}${co2(all.co2_kg)}`);
+  } else {
+    $("money-label").textContent = "Cost";
+    $("money-note").textContent = "";
+    cell("Now", SYM + fmt.money3(P.cost_per_h), "/h", `at ${fmt.w(P.total_w)} W`).classList.add("live");
+    cell("Today", cash(today.cost), "", `${kwh(today.kwh)} · peak ${fmt.w(today.peak_w)} W${cov(today)}${co2(today.co2_kg)}`);
+    cell("Month to date", cash(month.cost), "", `${kwh(month.kwh)} · ${fmt.dur(month.hours * 3600)} recorded${cov(month)}${co2(month.co2_kg)}`);
+    cell("Projected month", cash(month.projected_30d_cost), "", `30 days at the average draw · ${kwh(month.projected_30d_kwh)}${co2(month.projected_30d_co2_kg)}`);
+    cell("All time", cash(all.cost), "", `${kwh(all.kwh)} over ${fmt.dur(all.hours * 3600)}${co2(all.co2_kg)}`);
+  }
+  const idleShare = month.kwh ? 100 * (month.idle_kwh || 0) / month.kwh : 0;
+  // Older daemons do not send idle_cost; the share of the bill stands in.
+  const idleCost = month.idle_cost ?? (month.energy_cost || 0) * idleShare / 100;
+  $("idle-call").classList.toggle("plain", NO_TARIFF);   // amber only when it is money
+  const strong = $("idle-cost");
+  strong.className = NO_TARIFF ? "plain" : "";
+  strong.textContent = NO_TARIFF ? `${fmt.kwh(month.idle_kwh)} kWh` : cash(idleCost);
+  $("idle-text").textContent = (NO_TARIFF ? "used" : "spent")
+    + ` this month while switched on and doing nothing — ${fmt.w(idleShare)} % of the energy.`;
+}
+
+/* ---------------------------------------------------------------- the sentence
+   Built only from what the payload says. It never guesses at a cause. */
+function speak(st) {
+  const box = $("say");
+  box.textContent = "";
+  const put = (s, cls) => { if (cls) hel("b", cls, box, s); else box.append(s); };
+  const d = NOW;
+  if (st === "unreach") {
+    if (transportIssue && transportIssue.status === 401) {
+      put("Not authorised to read this powermon, so nothing on this page is current."); return;
+    }
+    if (!lastOk) { put("No reading has arrived yet. Powermon is not answering."); return; }
+    const s = (Date.now() - lastOk) / 1000;
+    const m = Math.round(s / 60);
+    put(`No reading for ${s < 90 ? Math.round(s) + " seconds" : m + " minute" + (m === 1 ? "" : "s")}. `
+      + "The figures are the last ones received.");
+    return;
+  }
+  const P = d.power || {};
+  const w = fmt.w(P.total_w) + " W";
+  const money = !NO_TARIFF && P.cost_per_h != null;
+  const alerts = d.alerts || [];
+  const idleAlert = alerts.find((a) => a.kind === "idle")
+    || (d.alert && d.alert.active ? { since: d.alert.since } : null);
+  const others = alerts.filter((a) => a.kind !== "idle");
+  // Older daemons send no run; a partial one falls back to the open run in api/runs.
+  const run = d.run && d.run.start != null ? d.run
+    : (d.run ? RUNS.find((r) => r.running) : null);
+  const since = (ts) => {
+    const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+    return ts * 1000 >= midnight.getTime() ? fmt.clock(ts) : fmt.dayTime(ts);
+  };
+
+  if (idleAlert && !d.busy) {
+    const mins = idleAlert.since ? Math.max(1, Math.round((d.ts - idleAlert.since) / 60)) : null;
+    put("Idle, but drawing ");
+    put(w, "w");
+    put((mins ? ` for ${mins} minute${mins === 1 ? "" : "s"}` : "")
+      + (IDLE_W > 0 ? `, above the ${fmt.w(IDLE_W)} W alert.` : ", above the idle alert threshold."));
+    if (money) { put(" That is "); put(cash(P.cost_per_h * 24), "money"); put(" a day."); }
+  } else if (d.busy) {
+    put("Working: "); put(w, "w");
+    if (money) { put(", which is "); put(cash(P.cost_per_h) + " an hour", "money"); put("."); }
+    else put(".");
+    if (run && run.start != null) {
+      if (money && run.cost != null) { put(" This run has cost "); put(cash(run.cost), "money"); }
+      else if (run.kwh != null) put(` This run has used ${fmt.kwh(run.kwh)} kWh`);
+      else put(" This run has been going");
+      put(` since ${since(run.start)}.`);
+    }
+  } else {
+    put("Idle at "); put(w, "w"); put(".");
+    if (money) { put(" That is "); put(cash(P.cost_per_h * 24) + " a day", "money"); put(" for doing nothing."); }
+    else if (P.total_w != null) put(` That is ${fmt.kwh(P.total_w * 24 / 1000)} kWh a day for doing nothing.`);
+    const s = d.suspend;
+    if (s && s.enabled && s.in_s != null) {
+      const m = Math.max(1, Math.ceil(s.in_s / 60));
+      put(` It goes to sleep in ${m} minute${m === 1 ? "" : "s"}.`);
+    }
+  }
+  if (others.length) {
+    put(" Alert: " + others[0].message + (others.length > 1 ? `, and ${others.length - 1} more.` : "."));
+  }
+}
+
+/* ---------------------------------------------------------------- state: chip, mascot, tab icon */
+const TINT = { work: "#4BE0A6", idle: "#86A497", alert: "#FF8F5E", unreach: "#849A90" };
+let lastIcon = "";
+function favicon(st, deg) {
+  const key = st + Math.round(deg / 10);
+  if (key === lastIcon) return;
+  lastIcon = key;
+  const c = TINT[st];
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+    + '<polygon fill="#FAB219" points="52.5,0.5 39.1,20.7 47.9,20.7 46.6,37.5 60.9,16.5 52.1,16.5"/>'
+    + '<ellipse fill="#0F6E4F" cx="32" cy="93.5" rx="12" ry="6.5"/><ellipse fill="#0F6E4F" cx="68" cy="93.5" rx="12" ry="6.5"/>'
+    + `<circle fill="${c}" cx="50" cy="60" r="36"/><circle fill="#0B1310" cx="50" cy="54" r="21"/>`
+    + `<circle fill="${c}" cx="50" cy="54" r="11"/>`
+    + `<line stroke="${c}" stroke-width="6" stroke-linecap="round" x1="50" y1="54" x2="50" y2="35" transform="rotate(${Math.round(deg)} 50 54)"/>`
+    + '<path d="M41.8 83.8 A9 9 0 0 0 58.2 83.8" fill="none" stroke="#0B1310" stroke-width="5" stroke-linecap="round"/></svg>';
+  $("favicon").href = "data:image/svg+xml," + encodeURIComponent(svg);
+}
+
+function applyState(stale) {
+  const d = NOW;
+  const st = stale || !d ? "unreach"
+    : ((d.alert && d.alert.active) || (d.alerts && d.alerts.length)) ? "alert"
+    : d.busy ? "work" : "idle";
+  document.body.dataset.state = st;
+  const words = { work: "Working", idle: "Idle", alert: "Alert",
+    unreach: transportIssue && transportIssue.status === 401 ? "Not authorised" : "No data" }[st];
+  const chip = $("state-chip");
+  chip.textContent = words;
+  chip.setAttribute("aria-label", "State: " + words);
+  // The mascot's eye is a meter too: its needle sweeps 120 degrees with the load.
+  const frac = d && d.power && DIAL.max ? Math.min(1, (d.power.total_w || 0) / DIAL.max) : 0;
+  const deg = -60 + 120 * frac;
+  $("m-needle").style.transform = `rotate(${deg}deg)`;
+  favicon(st, deg);
+  speak(st);
+}
+
+/* ---------------------------------------------------------------- banners */
 /* Banners say what is wrong and what it means for the numbers. Rebuilt each
    tick from the server's own verdict, so the dashboard and /healthz agree. */
 function renderBanners(issues) {
@@ -679,135 +1139,52 @@ function bannerItems(d) {
   return items;
 }
 
+/* ---------------------------------------------------------------- live section */
 function renderLive(d) {
   NOW = d;
-  SYM = d.meta.symbol || "€";
-  $("host").textContent = d.meta.host + " · up " + fmt.dur(d.meta.uptime_s);
-  $("cpu-src").textContent = d.power.source === "rapl"
-    ? "CPU power: measured (RAPL)" : "CPU power: estimated from load";
-  $("tariff-pill").textContent = d.meta.mode === "none"
+  const meta = d.meta || {}, P = d.power || {};
+  SYM = meta.symbol || "€";
+  NO_TARIFF = meta.mode === "none";
+  $("host").textContent = (meta.host || "-") + " · up " + fmt.dur(meta.uptime_s);
+  $("cpu-src").textContent = P.source === "rapl" ? "CPU measured (RAPL)" : "CPU estimated from load";
+  $("tariff-pill").textContent = NO_TARIFF || meta.rate == null
     ? "no tariff set"
-    : `${SYM}${+d.meta.rate.toFixed(4)} / kWh`
-      + ({ tou: " · time of day", dynamic: " · live price" }[d.meta.mode] || "");
+    : `${SYM}${+meta.rate.toFixed(4)}/kWh`
+      + ({ tou: " · time of day", dynamic: " · live price" }[meta.mode] || "");
 
-  $("hero-w").textContent = fmt.w(d.power.total_w);
-  $("rate-now").textContent = SYM + fmt.money3(d.power.cost_per_h) + "/h";
-  $("rate-month").textContent = SYM + fmt.money(d.power.cost_per_h * 24 * 30);
-  $("state").textContent = d.busy ? "training" : "idle";
-  $("hero-sub").textContent =
-    `GPU ${fmt.w(d.power.gpu_w)} W · CPU ${fmt.w(d.power.cpu_w)} W · `
-    + `rest ${fmt.w(d.power.other_w)} W · updated ${fmt.clock(d.ts)}`;
-
-  drawSpark($("spark"), d.spark.total, "--series-gpu");
-  $("spark-note").textContent =
-    `total draw, last ${Math.round(d.spark.total.length * d.meta.interval / 60)} min`;
-
-  /* meters -- a ratio against a limit each */
-  const m = $("meters");
-  m.textContent = "";
-  const g = d.gpu;
-  if (g.present) {
-    const many = (g.count || 1) > 1;
-    const gpuMeter = meter("GPU power", fmt.w(d.power.gpu_w), "W",
-      100 * d.power.gpu_w / (g.limit_w || 350),
-      `limit ${fmt.w(g.limit_w)} W · ${g.name || "GPU"}`);
-    // With one card the aggregate IS the card, so a breakdown would just
-    // repeat it. With several, the aggregate hides which one is working.
-    if (many) {
-      const devs = hel("div", "devs", gpuMeter);
-      const list = g.devices || [];
-      // The card header already names the model when they all match, so
-      // repeating it per row only makes each row wrap to four lines.
-      const mixed = new Set(list.map((x) => x.name)).size > 1;
-      list.forEach((dev) => {
-        const row = hel("div", "dev", devs);
-        hel("span", "dev-name", row,
-          mixed ? `#${dev.index} ${dev.name || "GPU"}` : `#${dev.index}`);
-        // An unreadable sensor shows a dash, never a zero.
-        hel("span", "dev-num", row,
-          dev.power_w == null ? "—" : fmt.w(dev.power_w) + " W");
-        hel("span", "dev-num", row,
-          dev.temp == null ? "—" : fmt.w(dev.temp) + " °C");
-        hel("span", "dev-num", row,
-          dev.mem_used == null ? "—" : fmt.n1(dev.mem_used / 1024) + " GiB");
-      });
-    }
-    m.appendChild(gpuMeter);
-    m.appendChild(meter(many ? "GPU load (busiest)" : "GPU load", fmt.w(g.util), "%",
-      g.util || 0,
-      `${fmt.w(g.temp)} °C · fan ${fmt.w(g.fan)}% · ${fmt.w(g.clock_mhz)} MHz`));
-    m.appendChild(meter(many ? "GPU memory (total)" : "GPU memory",
-      fmt.n1((g.mem_used || 0) / 1024), "GiB",
-      100 * (g.mem_used || 0) / (g.mem_total || 1),
-      `of ${fmt.n1((g.mem_total || 0) / 1024)} GiB`));
-  }
-  m.appendChild(meter("CPU power", fmt.w(d.power.cpu_w), "W",
-    100 * d.power.cpu_w / (d.cpu.max_w || 142),
-    `${fmt.n1(d.cpu.pct)}% busy · ${d.cpu.temp == null ? "-" : fmt.n1(d.cpu.temp) + " °C"}`
-    + ` · load ${d.cpu.load ? d.cpu.load[0].toFixed(2) : "-"}`));
-  m.appendChild(meter("Memory", fmt.n1(d.mem.used_gib), "GiB", d.mem.pct,
-    `of ${fmt.n1(d.mem.total_gib)} GiB`));
-  m.appendChild(meter("Disk (home)", fmt.n1(d.disk.used_gib), "GiB", d.disk.pct,
-    `of ${fmt.n1(d.disk.total_gib)} GiB · net `
-    + `${fmt.n1(d.net.rx_mbps)}/${fmt.n1(d.net.tx_mbps)} Mb/s`));
-
-  /* period tiles */
-  const t = $("tiles");
-  t.textContent = "";
-  const T = d.totals;
-  // Coverage is only worth the words when it is not total.
-  const cov = (p) => (p.coverage != null && p.coverage < 0.999)
-    ? ` · ${fmt.w(100 * p.coverage)}% measured` : "";
-  // CO2 only when the server has a carbon factor; null means not configured.
-  const co2 = (kg) => (d.meta.co2_g_per_kwh == null || kg == null) ? ""
-    : ` · ${kg >= 100 ? kg.toFixed(0) : kg.toFixed(1)} kg CO2`;
-  t.appendChild(tile("Today", SYM + fmt.money(T.today.cost), "",
-    `${fmt.kwh(T.today.kwh)} kWh · peak ${fmt.w(T.today.peak_w)} W${cov(T.today)}${co2(T.today.co2_kg)}`));
-  t.appendChild(tile("Month to date", SYM + fmt.money(T.month.cost), "",
-    `${fmt.kwh(T.month.kwh)} kWh · ${fmt.dur(T.month.hours * 3600)} recorded${cov(T.month)}${co2(T.month.co2_kg)}`));
-  t.appendChild(tile("Projected month", SYM + fmt.money(T.month.projected_30d_cost), "",
-    `30 days at the average draw recorded · ${fmt.kwh(T.month.projected_30d_kwh)} kWh`));
-  const idleShare = T.month.kwh ? 100 * T.month.idle_kwh / T.month.kwh : 0;
-  // Older daemons do not send idle_cost; the share of the bill stands in.
-  const idleCost = T.month.idle_cost ?? T.month.energy_cost * idleShare / 100;
-  $("idle-cost").textContent = SYM + fmt.money(idleCost);
-  t.appendChild(tile("Idle this month", SYM + fmt.money(idleCost), "",
-    `${fmt.w(idleShare)}% of the energy, powered on and not training`));
-  t.appendChild(tile("All time", SYM + fmt.money(T.all.cost), "",
-    `${fmt.kwh(T.all.kwh)} kWh over ${fmt.dur(T.all.hours * 3600)}${co2(T.all.co2_kg)}`));
-
-  /* GPU processes */
-  const p = $("procs");
-  p.textContent = "";
-  if (!g.present) { p.textContent = "No NVIDIA GPU detected."; }
-  else if (!g.procs || !g.procs.length) { p.textContent = "No compute processes."; }
-  else {
-    const tbl = document.createElement("table");
-    tbl.innerHTML = "<thead><tr><th>Process</th><th>PID</th><th>GPU memory</th></tr></thead>";
-    const tb = document.createElement("tbody");
-    g.procs.forEach((pr) => {
-      const tr = document.createElement("tr");
-      [pr.name, pr.pid, fmt.n1((pr.mem_mib || 0) / 1024) + " GiB"].forEach((cell) => {
-        const td = document.createElement("td"); td.textContent = cell; tr.appendChild(td);
-      });
-      tb.appendChild(tr);
-    });
-    tbl.appendChild(tb);
-    p.appendChild(tbl);
-  }
-
+  updateDial(d);
+  renderSplit(d);
+  const sp = (d.spark && d.spark.total) || [];
+  drawSpark($("spark"), sp, "--power");
+  $("spark-note").textContent = `Total draw, last ${Math.round(sp.length * (meta.interval || 2) / 60)} min`;
+  $("hero-sub").textContent = "Updated " + fmt.clockS(d.ts);
+  renderMoney(d);
+  renderStrip(d);
+  renderProcs(d);
   renderBanners(bannerItems(d));
 
   $("model-note").textContent =
-    `Wall power = (CPU + GPU + ${fmt.w(d.meta.baseline_w)} W baseline) ÷ `
-    + `${d.meta.psu_efficiency} PSU efficiency. GPU watts come from the card's own sensor; `
-    + `CPU watts are ${d.power.source === "rapl" ? "read from the RAPL energy counter" :
+    `Wall power = (CPU + GPU + ${fmt.w(meta.baseline_w)} W baseline) ÷ `
+    + `${meta.psu_efficiency} PSU efficiency. GPU watts come from the card's own sensor; `
+    + `CPU watts are ${P.source === "rapl" ? "read from the RAPL energy counter" :
         "estimated from utilisation (see README to enable RAPL)"}; `
     + `the baseline and PSU efficiency are configured constants, so the total is a close `
     + `estimate, not a metered reading. Calibrate both in config.toml against a plug meter.`;
 }
 
-/* ---------------------------------------------------------------- chart 1: stacked area */
+function renderProcs(d) {
+  const g = d.gpu || {};
+  const p = $("procs");
+  p.textContent = "";
+  p.className = "empty";
+  if (!g.present) { p.textContent = "No NVIDIA GPU detected."; return; }
+  if (!g.procs || !g.procs.length) { p.textContent = "No compute processes."; return; }
+  p.className = "table-scroll";
+  tableInto(p, ["Process", "PID", "GPU memory"],
+    g.procs.map((pr) => [pr.name, pr.pid, fmt.n1((pr.mem_mib || 0) / 1024) + " GiB"]));
+}
+
+/* ---------------------------------------------------------------- charts */
 const PAD = { l: 52, r: 18, t: 14, b: 26 };
 
 /* Map one SVG unit to one CSS pixel, so axis text keeps its real size on a phone
@@ -821,9 +1198,36 @@ function sizeOf(svg, H) {
   return W;
 }
 const xTickTarget = (W) => (W < 420 ? 3 : W < 700 ? 5 : 7);
+/* A label centred on the last tick would run past the right edge: end-anchor it there. */
+const edgeAnchor = (first, x, W) => first ? "start" : x > W - PAD.r - 22 ? "end" : "middle";
 
 function xLabel(ts) { return RANGE === "24h" ? fmt.clock(ts) : fmt.day(ts); }
-function whenLabel(ts) { return RANGE === "24h" ? fmt.dayTime(ts) : fmt.dayTime(ts); }
+function whenLabel(ts) { return fmt.dayTime(ts); }
+
+/* Training runs as shaded spans behind the power series, labelled where they
+   are wide enough to carry a name. */
+function drawRunBands(svg, S, W, H, plotW, plotH) {
+  const n = S.t.length, t0 = S.t[0], t1 = S.t[n - 1];
+  if (!(t1 > t0)) return;
+  const tx = (ts) => PAD.l + (ts - t0) / (t1 - t0) * plotW;
+  const g = el("g", {}, svg);
+  RUNS.forEach((r) => {
+    const s = Math.max(r.start, t0), e = Math.min(r.end == null ? t1 : r.end, t1);
+    if (!(e > s)) return;
+    const x0 = tx(s), x1 = Math.max(tx(e), x0 + 2);
+    el("rect", { x: x0.toFixed(1), y: PAD.t, width: (x1 - x0).toFixed(1), height: plotH, class: "runband" }, g);
+    el("line", { x1: x0.toFixed(1), x2: x1.toFixed(1), y1: PAD.t + 1, y2: PAD.t + 1, class: "runedge" }, g);
+    const room = x1 - x0 - 10;
+    if (room >= 36) {
+      let label = (r.running ? "RUN · RUNNING" : "RUN") + (r.name ? " · " + r.name : "");
+      const fit = Math.floor(room / 6.4);
+      if (label.length > fit) label = label.slice(0, Math.max(3, fit - 1)) + "…";
+      const t = text(g, (x0 + 5).toFixed(1), PAD.t + 14, label, "runlabel");
+      const title = el("title", {}, t);
+      title.textContent = `Run ${r.name || ""}: ${fmt.dayTime(r.start)}, ${fmt.dur(r.seconds)}, ${fmt.kwh(r.kwh)} kWh`;
+    }
+  });
+}
 
 function drawStack(svg, S) {
   svg.textContent = "";
@@ -832,7 +1236,7 @@ function drawStack(svg, S) {
   if (n < 2) { text(svg, W / 2, H / 2, "Collecting data…", "tick").setAttribute("text-anchor", "middle"); return; }
   const plotW = W - PAD.l - PAD.r, plotH = H - PAD.t - PAD.b;
   const maxTotal = Math.max(...S.total, 1);
-  const ticks = niceTicks(maxTotal * 1.08, 4);
+  const ticks = niceTicks(maxTotal * 1.12, 4);
   const yMax = ticks[ticks.length - 1];
   const X = (i) => PAD.l + (n === 1 ? plotW / 2 : i * plotW / (n - 1));
   const Y = (v) => PAD.t + plotH - (v / yMax) * plotH;
@@ -842,12 +1246,13 @@ function drawStack(svg, S) {
                  class: v === 0 ? "axisline" : "gridline" }, svg);
     text(svg, PAD.l - 8, Y(v) + 4, v.toLocaleString(), "tick y");
   });
+  drawRunBands(svg, S, W, H, plotW, plotH);
 
-  // stacked bands, bottom-up: GPU, CPU, other. 2px surface gap between fills.
+  // stacked bands, bottom-up: GPU, CPU, rest. 2px surface gap between fills.
   const stack = [
     { key: "gpu", cls: "gpu", name: "GPU" },
     { key: "cpu", cls: "cpu", name: "CPU" },
-    { key: "other", cls: "other", name: "Rest" },
+    { key: "other", cls: "rest", name: "Rest" },
   ];
   let lower = new Array(n).fill(0);
   stack.forEach((s) => {
@@ -863,7 +1268,7 @@ function drawStack(svg, S) {
       const gap = yLow - yUp > 4 ? 1 : 0;
       bottom += "L" + X(i).toFixed(1) + " " + (yLow - gap).toFixed(1);
     }
-    el("path", { d: top + bottom + "Z", class: "band-" + s.cls, "fill-opacity": .17 }, svg);
+    el("path", { d: top + bottom + "Z", class: "band-" + s.cls, "fill-opacity": .22 }, svg);
     el("path", { d: top, class: "edge edge-" + s.cls }, svg);
     lower = upper;
   });
@@ -872,11 +1277,11 @@ function drawStack(svg, S) {
   const step = Math.max(1, Math.round(n / xTickTarget(W)));
   for (let i = 0; i < n; i += step) {
     const t = text(svg, X(i), H - 8, xLabel(S.t[i]), "tick");
-    t.setAttribute("text-anchor", i === 0 ? "start" : "middle");
+    t.setAttribute("text-anchor", edgeAnchor(i === 0, X(i), W));
   }
   // direct label on the peak, selectively
   const peakIdx = S.total.indexOf(Math.max(...S.total));
-  const lab = text(svg, X(peakIdx), Math.max(PAD.t + 10, Y(S.total[peakIdx]) - 8),
+  const lab = text(svg, X(peakIdx), Math.max(PAD.t + 28, Y(S.total[peakIdx]) - 8),
                    fmt.w(S.total[peakIdx]) + " W peak", "dlabel");
   lab.setAttribute("text-anchor", peakIdx > n * 0.8 ? "end" : peakIdx < n * 0.2 ? "start" : "middle");
 
@@ -896,7 +1301,7 @@ function drawBars(svg, S) {
       : Math.floor(ts / 3600) * 3600;
     const g = groups.get(key) || { kwh: 0, cost: 0 };
     g.kwh += S.kwh[i] || 0;
-    g.cost += S.cost ? (S.cost[i] || 0) : (S.kwh[i] || 0) * (NOW ? NOW.meta.rate : 0);
+    g.cost += S.cost ? (S.cost[i] || 0) : (S.kwh[i] || 0) * (NOW ? NOW.meta.rate || 0 : 0);
     groups.set(key, g);
   }
   const keys = [...groups.keys()].sort((a, b) => a - b);
@@ -906,7 +1311,7 @@ function drawBars(svg, S) {
   const ticks = niceTicks(maxKwh * 1.1, 3);
   const yMax = ticks[ticks.length - 1];
   const band = plotW / keys.length;
-  const barW = Math.min(24, Math.max(2, band - 4));
+  const barW = Math.min(22, Math.max(2, band - 3));
   const Y = (v) => PAD.t + plotH - (v / yMax) * plotH;
   const X = (i) => PAD.l + band * i + band / 2;
 
@@ -916,12 +1321,12 @@ function drawBars(svg, S) {
     text(svg, PAD.l - 8, Y(v) + 4, v.toFixed(v < 1 ? 2 : 1), "tick y");
   });
 
-  // 4px rounded data-end, square at the baseline
+  // 2px rounded data-end, square at the baseline
   keys.forEach((k, i) => {
     const g = groups.get(k);
     const y = Y(g.kwh), base = Y(0);
     const h = Math.max(1, base - y);
-    const r = Math.min(4, barW / 2, h);
+    const r = Math.min(2, barW / 2, h);
     const x0 = X(i) - barW / 2, x1 = X(i) + barW / 2;
     el("path", { class: "bar", d: `M${x0} ${base}L${x0} ${y + r}Q${x0} ${y} ${x0 + r} ${y}`
       + `L${x1 - r} ${y}Q${x1} ${y} ${x1} ${y + r}L${x1} ${base}Z` }, svg);
@@ -930,14 +1335,14 @@ function drawBars(svg, S) {
   keys.forEach((k, i) => {
     if (i % step) return;
     const t = text(svg, X(i), H - 8, perDay ? fmt.day(k) : fmt.clock(k), "tick");
-    t.setAttribute("text-anchor", "middle");
+    t.setAttribute("text-anchor", edgeAnchor(false, X(i), W));
   });
   return { X, Y, keys, groups, band, perDay };
 }
 
 function drawLines(svg, S) {
   svg.textContent = "";
-  const H = 200, W = sizeOf(svg, H);
+  const H = 220, W = sizeOf(svg, H);
   const have = S.gpu_temp.some((v) => v != null) || S.cpu_temp.some((v) => v != null);
   if (!have) {
     const t = text(svg, W / 2, H / 2,
@@ -970,12 +1375,30 @@ function drawLines(svg, S) {
   const step = Math.max(1, Math.round(n / xTickTarget(W)));
   for (let i = 0; i < n; i += step) {
     const t = text(svg, X(i), H - 8, xLabel(S.t[i]), "tick");
-    t.setAttribute("text-anchor", i === 0 ? "start" : "middle");
+    t.setAttribute("text-anchor", edgeAnchor(i === 0, X(i), W));
   }
   return { X, Y, n };
 }
 
 /* ---------------------------------------------------------------- hover layers */
+function ttRow(tt, color, value, name, extra) {
+  const row = hel("div", "tt-row" + (extra && extra.total ? " total" : ""), tt);
+  const key = hel("span", "k", row);
+  key.style.background = color ? `var(${color})` : "transparent";
+  hel("span", "v" + (extra && extra.money ? " money" : ""), row, value);
+  hel("span", "n", row, name);
+}
+function placeTip(svg, tt, x, W) {
+  tt.classList.add("show");
+  const box = svg.getBoundingClientRect();
+  const px = box.left + (x / W) * box.width;
+  const wrapBox = tt.parentElement.getBoundingClientRect();
+  let left = px - wrapBox.left + 14;
+  if (left + tt.offsetWidth > wrapBox.width) left = px - wrapBox.left - tt.offsetWidth - 14;
+  tt.style.left = Math.max(0, left) + "px";
+  tt.style.top = "8px";
+}
+
 function attachCrosshair(svg, geom, S, tt, rows) {
   if (!geom) return;
   const W = svg.viewBox.baseVal.width;
@@ -988,29 +1411,17 @@ function attachCrosshair(svg, geom, S, tt, rows) {
                            height: svg.viewBox.baseVal.height - PAD.t - PAD.b,
                            fill: "transparent" }, svg);
   let idx = -1;
-  const show = (i, clientX) => {
+  const show = (i) => {
     if (i < 0 || i >= geom.n) return;
     idx = i;
     const x = geom.X(i);
     line.setAttribute("x1", x); line.setAttribute("x2", x);
     tt.textContent = "";
-    const when = document.createElement("div");
-    when.className = "tt-when";
-    when.textContent = whenLabel(S.t[i]);
-    tt.appendChild(when);
+    hel("div", "tt-when", tt, whenLabel(S.t[i]));
+    const inRun = RUNS.find((r) => S.t[i] >= r.start && (r.end == null || S.t[i] <= r.end));
     rows.forEach((r, k) => {
       const v = r.values[i];
-      const row = document.createElement("div");
-      row.className = "tt-row" + (r.total ? " total" : "");
-      const key = document.createElement("span");
-      key.className = "k";
-      key.style.background = r.color ? `var(${r.color})` : "transparent";
-      const val = document.createElement("span"); val.className = "v";
-      val.textContent = v == null ? "-" : r.fmt(v);
-      const nm = document.createElement("span"); nm.className = "n";
-      nm.textContent = r.name;
-      row.append(key, val, nm);
-      tt.appendChild(row);
+      ttRow(tt, r.color, v == null ? "-" : r.fmt(v), r.name, { total: r.total });
       if (r.stackTop && v != null) {
         dots[k].setAttribute("cx", x);
         dots[k].setAttribute("cy", geom.Y(r.stackTop[i]));
@@ -1020,20 +1431,14 @@ function attachCrosshair(svg, geom, S, tt, rows) {
         dots[k].setAttribute("fill-opacity", 0);
       }
     });
-    tt.classList.add("show");
-    const box = svg.getBoundingClientRect();
-    const px = box.left + (x / W) * box.width;
-    const wrapBox = tt.parentElement.getBoundingClientRect();
-    let left = px - wrapBox.left + 14;
-    if (left + tt.offsetWidth > wrapBox.width) left = px - wrapBox.left - tt.offsetWidth - 14;
-    tt.style.left = Math.max(0, left) + "px";
-    tt.style.top = "8px";
+    if (inRun && rows.some((r) => r.stackTop)) hel("div", "tt-when", tt, "during run " + (inRun.name || "#" + inRun.id)).style.margin = "6px 0 0";
+    placeTip(svg, tt, x, W);
   };
   const fromEvent = (ev) => {
     const box = svg.getBoundingClientRect();
     const vx = (ev.clientX - box.left) / box.width * W;
     const i = Math.round((vx - PAD.l) / ((W - PAD.l - PAD.r) / Math.max(1, geom.n - 1)));
-    show(Math.max(0, Math.min(geom.n - 1, i)), ev.clientX);
+    show(Math.max(0, Math.min(geom.n - 1, i)));
   };
   hit.addEventListener("pointermove", fromEvent);
   hit.addEventListener("pointerdown", fromEvent);
@@ -1055,58 +1460,60 @@ function attachCrosshair(svg, geom, S, tt, rows) {
 function attachBarHover(svg, geom, tt) {
   if (!geom) return;
   const H = svg.viewBox.baseVal.height, W = svg.viewBox.baseVal.width;
+  let idx = -1;
+  const paint = (i) => {
+    if (i < 0 || i >= geom.keys.length) return;
+    idx = i;
+    const k = geom.keys[i], g = geom.groups.get(k);
+    tt.textContent = "";
+    hel("div", "tt-when", tt, geom.perDay
+      ? new Date(k * 1000).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })
+      : fmt.dayTime(k));
+    ttRow(tt, "--power", fmt.kwh(g.kwh) + " kWh", "energy");
+    if (!NO_TARIFF) ttRow(tt, "--money", cash(g.cost), "cost", { money: true });
+    placeTip(svg, tt, geom.X(i), W);
+  };
   geom.keys.forEach((k, i) => {
-    const g = geom.groups.get(k);
     const hit = el("rect", { x: geom.X(i) - geom.band / 2, y: PAD.t, width: geom.band,
                              height: H - PAD.t - PAD.b, fill: "transparent" }, svg);
-    const paint = () => {
-      tt.textContent = "";
-      const when = document.createElement("div");
-      when.className = "tt-when";
-      when.textContent = geom.perDay
-        ? new Date(k * 1000).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })
-        : fmt.dayTime(k);
-      tt.appendChild(when);
-      [[fmt.kwh(g.kwh) + " kWh", "energy"], [SYM + fmt.money(g.cost), "cost"]].forEach(([v, n]) => {
-        const row = document.createElement("div"); row.className = "tt-row";
-        const key = document.createElement("span"); key.className = "k";
-        key.style.background = "var(--series-gpu)";
-        const val = document.createElement("span"); val.className = "v"; val.textContent = v;
-        const nm = document.createElement("span"); nm.className = "n"; nm.textContent = n;
-        row.append(key, val, nm); tt.appendChild(row);
-      });
-      tt.classList.add("show");
-      const box = svg.getBoundingClientRect();
-      const px = box.left + (geom.X(i) / W) * box.width;
-      const wrapBox = tt.parentElement.getBoundingClientRect();
-      let left = px - wrapBox.left + 14;
-      if (left + tt.offsetWidth > wrapBox.width) left = px - wrapBox.left - tt.offsetWidth - 14;
-      tt.style.left = Math.max(0, left) + "px";
-      tt.style.top = "8px";
-    };
-    hit.addEventListener("pointerenter", paint);
-    hit.addEventListener("pointermove", paint);
+    hit.addEventListener("pointerenter", () => paint(i));
+    hit.addEventListener("pointermove", () => paint(i));
     hit.addEventListener("pointerleave", () => tt.classList.remove("show"));
   });
+  // Same keys as the line charts: arrows step through the bars.
+  svg.addEventListener("keydown", (ev) => {
+    const last = geom.keys.length - 1;
+    if (ev.key === "ArrowRight") { paint(idx < 0 ? 0 : Math.min(last, idx + 1)); ev.preventDefault(); }
+    else if (ev.key === "ArrowLeft") { paint(idx < 0 ? last : Math.max(0, idx - 1)); ev.preventDefault(); }
+    else if (ev.key === "Escape") tt.classList.remove("show");
+  });
+  svg.addEventListener("focus", () => { if (idx < 0) paint(geom.keys.length - 1); });
+  svg.addEventListener("blur", () => tt.classList.remove("show"));
 }
 
-/* ---------------------------------------------------------------- table twins */
-function buildTable(target, head, rows) {
+/* ---------------------------------------------------------------- tables */
+/* rows: arrays of cells; a cell is a string, a Node, or {v, cls}. */
+function tableInto(box, head, rows, opts) {
+  const o = opts || {};
+  const tbl = hel("table", null, box);
+  const htr = hel("tr", null, hel("thead", null, tbl));
+  head.forEach((h) => hel("th", null, htr, h));
+  const tb = hel("tbody", null, tbl);
+  rows.forEach((r, ri) => {
+    const tr = hel("tr", o.rowCls ? o.rowCls(ri) : null, tb);
+    r.forEach((c, ci) => {
+      const td = hel("td", (o.money || []).includes(ci) ? "money" : null, tr);
+      if (c instanceof Node) td.appendChild(c);
+      else if (c && typeof c === "object") { td.textContent = c.v; if (c.cls) td.classList.add(...c.cls.split(" ")); }
+      else td.textContent = c == null ? "-" : c;
+    });
+  });
+  return tbl;
+}
+function buildTable(target, head, rows, opts) {
   const box = $(target);
   box.textContent = "";
-  const tbl = document.createElement("table");
-  const thead = document.createElement("thead");
-  const htr = document.createElement("tr");
-  head.forEach((h) => { const th = document.createElement("th"); th.textContent = h; htr.appendChild(th); });
-  thead.appendChild(htr);
-  const tb = document.createElement("tbody");
-  rows.forEach((r) => {
-    const tr = document.createElement("tr");
-    r.forEach((c) => { const td = document.createElement("td"); td.textContent = c; tr.appendChild(td); });
-    tb.appendChild(tr);
-  });
-  tbl.append(thead, tb);
-  box.appendChild(tbl);
+  tableInto(box, head, rows, opts);
 }
 
 /* ---------------------------------------------------------------- render history */
@@ -1114,11 +1521,11 @@ function renderHistory(S) {
   SERIES = S;
   const g1 = drawStack($("plot1"), S);
   attachCrosshair($("plot1"), g1, S, $("tt1"), [
-    { name: "GPU", color: "--series-gpu", values: S.gpu, fmt: (v) => fmt.w(v) + " W",
+    { name: "GPU", color: "--gpu", values: S.gpu, fmt: (v) => fmt.w(v) + " W",
       stackTop: S.gpu },
-    { name: "CPU", color: "--series-cpu", values: S.cpu, fmt: (v) => fmt.w(v) + " W",
+    { name: "CPU", color: "--cpu", values: S.cpu, fmt: (v) => fmt.w(v) + " W",
       stackTop: S.gpu.map((v, i) => v + S.cpu[i]) },
-    { name: "Rest", color: "--series-other", values: S.other, fmt: (v) => fmt.w(v) + " W",
+    { name: "Rest", color: "--rest", values: S.other, fmt: (v) => fmt.w(v) + " W",
       stackTop: S.total },
     { name: "total at the wall", color: null, values: S.total, fmt: (v) => fmt.w(v) + " W", total: true },
   ]);
@@ -1126,8 +1533,8 @@ function renderHistory(S) {
   attachBarHover($("plot2"), g2, $("tt2"));
   const g3 = drawLines($("plot3"), S);
   attachCrosshair($("plot3"), g3, S, $("tt3"), [
-    { name: "GPU", color: "--series-gpu", values: S.gpu_temp, fmt: (v) => fmt.n1(v) + " °C" },
-    { name: "CPU", color: "--series-cpu", values: S.cpu_temp, fmt: (v) => fmt.n1(v) + " °C" },
+    { name: "GPU", color: "--gpu", values: S.gpu_temp, fmt: (v) => fmt.n1(v) + " °C" },
+    { name: "CPU", color: "--cpu", values: S.cpu_temp, fmt: (v) => fmt.n1(v) + " °C" },
   ]);
 
   $("n2").textContent = RANGE === "24h" ? "kWh per hour" : "kWh per day";
@@ -1142,7 +1549,7 @@ function renderHistory(S) {
     buildTable("tbl2", [RANGE === "24h" ? "Hour" : "Day", "kWh", "Cost " + SYM],
       g2.keys.map((k) => [g2.perDay ? fmt.day(k) : fmt.dayTime(k),
                           fmt.kwh(g2.groups.get(k).kwh),
-                          fmt.money(g2.groups.get(k).cost)]).reverse());
+                          fmt.money(g2.groups.get(k).cost)]).reverse(), { money: [2] });
   }
   buildTable("tbl3", ["Time", "GPU °C", "CPU °C"],
     S.t.map((ts, i) => [whenLabel(ts),
@@ -1158,11 +1565,11 @@ let transportIssue = null;
 
 function describeFailure(status) {
   if (status === 401) {
-    return { level: "error", message: "Not authorised. Open this page once as "
+    return { level: "error", status, message: "Not authorised. Open this page once as "
              + "?token=YOUR_TOKEN, or check server.token in config.toml." };
   }
   if (status) {
-    return { level: "error", message: `The server returned HTTP ${status}. `
+    return { level: "error", status, message: `The server returned HTTP ${status}. `
              + "The figures below are the last good reading." };
   }
   return { level: "error", message: "Cannot reach powermon. The figures below "
@@ -1180,13 +1587,12 @@ async function tickNow() {
     transportIssue = null;
     lastOk = Date.now();
   } catch (e) {
+    if (!e.status && !(e instanceof TypeError)) console.error(e);
     transportIssue = describeFailure(e.status);
     // Keep the last render, but say why it is not moving.
     renderBanners([transportIssue, ...bannerItems(NOW)]);
   }
-  const stale = Date.now() - lastOk > 12000;
-  $("dot").className = "dot" + (stale ? " stale" : "");
-  $("live-txt").textContent = stale ? "no data" : "live";
+  applyState(Date.now() - lastOk > 12000);
 }
 
 async function tickHistory() {
@@ -1204,35 +1610,26 @@ async function tickRuns() {
   try {
     const r = await fetch("api/runs?limit=50", { cache: "no-store" });
     if (!r.ok) throw new Error("http");
-    renderRuns((await r.json()).runs);
+    renderRuns((await r.json()).runs || []);
   } catch (e) { /* hold previous render; tickNow owns the banner */ }
 }
 
 function renderRuns(runs) {
+  RUNS = runs;
+  if (SERIES) renderHistory(SERIES);    // the bands on the power chart
   $("runs-empty").classList.toggle("hidden", runs.length > 0);
   const box = $("runs");
   box.classList.toggle("hidden", runs.length === 0);
   box.textContent = "";
   if (!runs.length) return;
-  const tbl = document.createElement("table");
-  const hr = document.createElement("tr");
-  ["Started", "Duration", "Energy", "Cost", "Average", "Process"].forEach((h) => {
-    const th = document.createElement("th"); th.textContent = h; hr.appendChild(th);
-  });
-  const head = document.createElement("thead"); head.appendChild(hr);
-  const tb = document.createElement("tbody");
-  runs.forEach((r) => {
-    const tr = document.createElement("tr");
-    [fmt.dayTime(r.start) + (r.running ? " (running)" : ""), fmt.dur(r.seconds),
-     fmt.kwh(r.kwh) + " kWh", SYM + fmt.money(r.cost), fmt.w(r.avg_w) + " W",
-     r.name || "-"].forEach((cell) => {
-      const td = document.createElement("td"); td.textContent = cell; tr.appendChild(td);
-    });
-    if (r.running) tr.style.fontWeight = "600";
-    tb.appendChild(tr);
-  });
-  tbl.append(head, tb);
-  box.appendChild(tbl);
+  tableInto(box, ["Started", "Duration", "Energy", "Cost", "Average", "Process"],
+    runs.map((r) => {
+      const start = document.createDocumentFragment();
+      start.append(fmt.dayTime(r.start));
+      if (r.running) { start.append(" "); hel("span", "chip sm s-work", start, "running"); }
+      return [start, fmt.dur(r.seconds), fmt.kwh(r.kwh) + " kWh",
+              NO_TARIFF ? "-" : cash(r.cost), fmt.w(r.avg_w) + " W", r.name || "-"];
+    }), { money: NO_TARIFF ? [] : [3] });
 }
 
 async function tickPeers() {
@@ -1244,60 +1641,56 @@ async function tickPeers() {
 }
 
 function renderPeers(data) {
+  const machines = data.machines || [];
   const card = $("peers-card");
-  card.classList.toggle("hidden", data.machines.length < 2);
+  card.classList.toggle("hidden", machines.length < 2);
   const box = $("peers");
   box.textContent = "";
-  if (data.machines.length < 2) return;
-  const cell = (tr, content, bold) => {
-    const td = document.createElement("td");
-    if (content instanceof Node) td.appendChild(content); else td.textContent = content;
-    if (bold) td.style.fontWeight = "700";
-    tr.appendChild(td);
-  };
+  if (machines.length < 2) return;
   const sym = (m) => m.symbol || SYM;
   const money = (v, m) => v == null ? "-" : sym(m) + fmt.money(v);
-  const tbl = document.createElement("table");
-  const hr = document.createElement("tr");
-  ["Machine", "State", "Now", "Cost/hour", "Today", "This month"].forEach((h) => {
-    const th = document.createElement("th"); th.textContent = h; hr.appendChild(th);
-  });
-  const head = document.createElement("thead"); head.appendChild(hr);
-  const tb = document.createElement("tbody");
-  data.machines.forEach((m) => {
-    const tr = document.createElement("tr");
+  const rows = machines.map((m) => {
     let name = m.name;
     if (m.url) {
       name = document.createElement("a");
       name.href = m.url; name.textContent = m.name;
     }
-    const state = m.ok ? (m.busy == null ? "-" : m.busy ? "training" : "idle")
-      : "unreachable" + (m.age_s == null ? "" : " \u00b7 last seen " + Math.max(1, Math.round(m.age_s / 60)) + " min ago");
-    cell(tr, name);
-    cell(tr, state);
-    cell(tr, m.total_w == null ? "-" : fmt.w(m.total_w) + " W");
-    cell(tr, money(m.cost_per_h, m));
-    cell(tr, money(m.today_cost, m));
-    cell(tr, money(m.month_cost, m));
-    tb.appendChild(tr);
+    const st = document.createDocumentFragment();
+    if (!m.ok) {
+      hel("span", "chip sm s-unreach", st, "unreachable");
+      if (m.age_s != null) st.append(" last seen " + Math.max(1, Math.round(m.age_s / 60)) + " min ago");
+    } else if (m.busy == null) st.append("-");
+    else hel("span", "chip sm " + (m.busy ? "s-work" : "s-idle"), st, m.busy ? "working" : "idle");
+    return [name, st, m.total_w == null ? "-" : fmt.w(m.total_w) + " W",
+            money(m.cost_per_h, m), money(m.today_cost, m), money(m.month_cost, m)];
   });
-  const t = data.total, tr = document.createElement("tr");
-  const tsym = (v) => v == null ? "-" : (data.machines.find((m) => m.ok) || {}).symbol + fmt.money(v);
-  cell(tr, "Total (" + t.machines_ok + " of " + t.machines + " reachable)", true);
-  cell(tr, t.mixed_currency ? "mixed currencies" : "", true);
-  cell(tr, t.total_w == null ? "-" : fmt.w(t.total_w) + " W", true);
-  cell(tr, tsym(t.cost_per_h), true);
-  cell(tr, tsym(t.today_cost), true);
-  cell(tr, tsym(t.month_cost), true);
-  tb.appendChild(tr);
-  tbl.append(head, tb);
-  box.appendChild(tbl);
+  const t = data.total || {};
+  const tsym = (v) => v == null ? "-" : ((machines.find((m) => m.ok) || {}).symbol || SYM) + fmt.money(v);
+  rows.push([`Total (${t.machines_ok} of ${t.machines} reachable)`, t.mixed_currency ? "mixed currencies" : "",
+             t.total_w == null ? "-" : fmt.w(t.total_w) + " W",
+             tsym(t.cost_per_h), tsym(t.today_cost), tsym(t.month_cost)]);
+  tableInto(box, ["Machine", "State", "Now", "Cost/hour", "Today", "This month"], rows,
+    { money: [3, 4, 5], rowCls: (i) => i === rows.length - 1 ? "total" : null });
 }
 
 /* ---------------------------------------------------------------- settings */
 let SETTINGS = null;    // last GET api/settings payload
 const dlg = $("settings");
 const keyInputs = () => [...document.querySelectorAll("#set-form [data-key]")];
+
+/* The idle alert threshold marks the dial. Read quietly once at start and after
+   every save; a server without the settings API simply leaves it off. */
+function noteIdleThreshold(p) {
+  const v = p && p.values && p.values.alerts ? Number(p.values.alerts.idle_w) : 0;
+  IDLE_W = v > 0 ? v : 0;
+  if (NOW) { updateDial(NOW); applyState(Date.now() - lastOk > 12000); }
+}
+async function peekSettings() {
+  try {
+    const r = await fetch("api/settings", { cache: "no-store" });
+    if (r.ok) noteIdleThreshold(await r.json());
+  } catch (e) { /* the dial just goes without the marker */ }
+}
 
 function inputValue(inp) {
   if (inp.type === "checkbox") return inp.checked;
@@ -1346,6 +1739,7 @@ function fillSettings(p) {
   setReadOnly(p.editable ? null : (p.redacted && p.redacted.length
     ? "Read-only: this key cannot change settings (it needs admin scope)."
     : "Read-only: changing settings from the web is turned off on the server."));
+  noteIdleThreshold(p);
 }
 
 async function writeSettings(method, body, key) {
@@ -1368,6 +1762,27 @@ async function writeSettings(method, body, key) {
     return false;
   }
 }
+
+/* Tabs: Price / Alerts / Sleep. Arrow keys move between them, as in any tablist. */
+const tabs = [...document.querySelectorAll('#set-form [role="tab"]')];
+function selectTab(tab, focus) {
+  tabs.forEach((t) => {
+    const on = t === tab;
+    t.setAttribute("aria-selected", String(on));
+    t.tabIndex = on ? 0 : -1;
+    $(t.getAttribute("aria-controls")).hidden = !on;
+  });
+  if (focus) tab.focus();
+}
+tabs.forEach((t, i) => {
+  t.addEventListener("click", () => selectTab(t));
+  t.addEventListener("keydown", (ev) => {
+    const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 }[ev.key];
+    if (to == null) return;
+    ev.preventDefault();
+    selectTab(tabs[(to + tabs.length) % tabs.length], true);
+  });
+});
 
 $("settings-btn").addEventListener("click", async () => {
   $("set-err").textContent = "";
@@ -1393,7 +1808,9 @@ $("set-form").addEventListener("submit", async (ev) => {
   const body = {};
   keyInputs().forEach((inp) => {
     const key = inp.dataset.key, v = inputValue(inp);
-    if (inp.closest("[hidden]")) return;          // a field for another mode
+    // A field for another pricing mode. (Fields on another tab still count.)
+    const modal = inp.closest("[data-modes]");
+    if (modal && modal.hidden) return;
     const was = savedValue(key);
     if (typeof v === "number" ? v === Number(was) : v === was) return;
     const [s, k] = key.split(".");
@@ -1441,12 +1858,14 @@ $("theme-btn").addEventListener("click", () => {
   const dark = root.dataset.theme === "dark"
     || (!root.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
   root.dataset.theme = dark ? "light" : "dark";
-  localStorage.setItem("powermon-theme", root.dataset.theme);
+  try { localStorage.setItem("powermon-theme", root.dataset.theme); } catch (e) { /* private window */ }
   if (SERIES) renderHistory(SERIES);
-  if (NOW) drawSpark($("spark"), NOW.spark.total, "--series-gpu");
+  if (NOW) drawSpark($("spark"), NOW.spark && NOW.spark.total, "--power");
 });
-const savedTheme = localStorage.getItem("powermon-theme");
-if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+try {
+  const savedTheme = localStorage.getItem("powermon-theme");
+  if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+} catch (e) { /* no storage: follow the system */ }
 
 /* Charts are sized in real pixels, so a width change (rotate a phone, resize a
    window) needs a redraw rather than a rescale. Debounced; no refetch. */
@@ -1458,14 +1877,16 @@ addEventListener("resize", () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
     if (SERIES) renderHistory(SERIES);
-    if (NOW) drawSpark($("spark"), NOW.spark.total, "--series-gpu");
   }, 180);
 });
 
+favicon("unreach", -60);
+dialFace();
 tickNow();
 tickHistory();
 tickRuns();
 tickPeers();
+peekSettings();
 setInterval(tickPeers, 15000);
 setInterval(tickNow, 2000);
 setInterval(tickHistory, 60000);

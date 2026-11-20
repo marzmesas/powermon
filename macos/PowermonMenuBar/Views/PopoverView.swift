@@ -39,7 +39,7 @@ struct PopoverView: View {
     // MARK: - Sections
 
     private func header(_ snapshot: Snapshot) -> some View {
-        let alerting = snapshot.alert?.active == true
+        let alerting = snapshot.isAlerting
         return VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(snapshot.meta.host)
@@ -55,6 +55,16 @@ struct PopoverView: View {
                     Text(alerting ? "idle, high draw" : snapshot.busy ? "training" : "idle")
                         .font(.system(size: 11))
                         .foregroundStyle(Palette.secondary)
+                }
+            }
+            ForEach((snapshot.alerts ?? []).filter { $0.kind != "idle" }, id: \.kind) { alert in
+                HStack(spacing: 4) {
+                    Circle().fill(Palette.warning).frame(width: 6, height: 6)
+                    Text(alert.message)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.warning)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
             }
             Text("up \(Format.uptime(snapshot.meta.uptimeS)) · CPU \(snapshot.power.isMeasured ? "measured" : "estimated")")

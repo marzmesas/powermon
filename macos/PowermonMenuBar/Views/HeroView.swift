@@ -17,6 +17,13 @@ struct HeroView: View {
             }
             Sparkline(values: snapshot.spark.total)
                 .frame(height: 48)
+            if let run = snapshot.run {
+                Text(Format.run(run, symbol: snapshot.meta.symbol))
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(Palette.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
         }
     }
 }

@@ -11,6 +11,18 @@ struct TotalsView: View {
             row("Projected",
                 kwh: totals.month.projected30DKwh,
                 cost: totals.month.projected30DCost)
+            if let idle = totals.month.idleCost {
+                HStack {
+                    Text("Idle this month")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.secondary)
+                    Spacer()
+                    Text(Format.cost(idle, symbol: symbol))
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(Palette.primary)
+                        .frame(width: 56, alignment: .trailing)
+                }
+            }
         }
     }
 

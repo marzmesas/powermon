@@ -52,6 +52,13 @@ enum Format {
         return "\(minutes)m"
     }
 
+    /// "Run: 2h 14m · 1.06 kWh · €0.32", plus " · name" when the process is known.
+    static func run(_ run: Snapshot.Run, symbol: String) -> String {
+        var parts = ["Run: \(uptime(run.seconds))", kwh(run.kwh), cost(run.cost, symbol: symbol)]
+        if let name = run.name { parts.append(name) }
+        return parts.joined(separator: " · ")
+    }
+
     static func elapsed(since date: Date) -> String {
         let seconds = Int(Date().timeIntervalSince(date))
         if seconds < 60 { return "\(seconds) s ago" }

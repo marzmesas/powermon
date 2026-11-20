@@ -116,4 +116,56 @@ final class SnapshotDecodingTests: XCTestCase {
         let s = try decoder.decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: json))
         XCTAssertEqual(s.meta.mac, "aa:bb:cc:dd:ee:ff")
     }
+
+    // MARK: - Newer optional fields: idle cost, run, alerts
+
+    /// Decodes a fixture after `edit` has injected extra keys into its JSON.
+    private func decode(_ fixture: String, injecting edit: (inout [String: Any]) -> Void) throws -> Snapshot {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: fixture, withExtension: "json"))
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        edit(&json)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+
+    func testNewFieldsAbsentFromOlderServers() throws {
+        let s = try decode("sample-now")
+        XCTAssertNil(s.totals.month.idleCost)
+        XCTAssertNil(s.run)
+        XCTAssertNil(s.alerts)
+    }
+
+    func testNewFieldsDecodeWhenPresent() throws {
+        let s = try decode("sample-now") { json in
+            var totals = json["totals"] as! [String: Any]
+            var month = totals["month"] as! [String: Any]
+            month["idle_cost"] = 1.25
+            totals["month"] = month
+            json["totals"] = totals
+            json["run"] = ["id": 7, "start": 1_700_000_000.0, "seconds": 8040.0, "kwh": 1.06,
+                           "cost": 0.32, "name": "train.py", "running": true, "other": 1]
+            json["alerts"] = [["kind": "idle", "message": "idle", "since": 1.0],
+                              ["kind": "gpu_hot", "message": "GPU at 88 °C"]]
+        }
+        XCTAssertEqual(try XCTUnwrap(s.totals.month.idleCost), 1.25, accuracy: 0.001)
+        XCTAssertEqual(s.run?.name, "train.py")
+        XCTAssertEqual(try XCTUnwrap(s.run).seconds, 8040, accuracy: 0.1)
+        XCTAssertEqual(s.alerts?.map(\.kind), ["idle", "gpu_hot"])
+        XCTAssertNil(s.alerts?.last?.since)
+        XCTAssertTrue(s.isAlerting)
+    }
+
+    func testNullRunDecodesAsNil() throws {
+        let s = try decode("sample-now") { $0["run"] = NSNull() }
+        XCTAssertNil(s.run)
+        XCTAssertFalse(s.isAlerting)
+    }
+
+    func testRunLineFormatting() throws {
+        let run = Snapshot.Run(id: 1, start: 0, seconds: 8040, kwh: 1.06, cost: 0.32, name: nil, running: true)
+        XCTAssertEqual(Format.run(run, symbol: "€"), "Run: 2h 14m · 1.06 kWh · €0.32")
+        let named = Snapshot.Run(id: 1, start: 0, seconds: 8040, kwh: 1.06, cost: 0.32, name: "train.py", running: true)
+        XCTAssertEqual(Format.run(named, symbol: "€"), "Run: 2h 14m · 1.06 kWh · €0.32 · train.py")
+    }
 }

@@ -18,6 +18,10 @@ struct Snapshot: Codable, Sendable, Equatable {
     let busy: Bool
     /// Absent from servers older than the `[alerts]` section.
     let alert: Alert?
+    /// Every alert active on the server. Absent from older servers.
+    let alerts: [ActiveAlert]?
+    /// The training run in progress, null between runs. Absent from older servers.
+    let run: Run?
     let totals: Totals
     let spark: Spark
     let meta: Meta
@@ -26,6 +30,25 @@ struct Snapshot: Codable, Sendable, Equatable {
     struct Alert: Codable, Sendable, Equatable {
         let active: Bool
     }
+
+    struct ActiveAlert: Codable, Sendable, Equatable {
+        let kind: String
+        let message: String
+        let since: Double?
+    }
+
+    struct Run: Codable, Sendable, Equatable {
+        let id: Int
+        let start: Double
+        let seconds: Double
+        let kwh: Double
+        let cost: Double
+        let name: String?
+        let running: Bool
+    }
+
+    /// True for the legacy `alert` flag or any entry of `alerts`.
+    var isAlerting: Bool { alert?.active == true || !(alerts ?? []).isEmpty }
 
     struct Power: Codable, Sendable, Equatable {
         let totalW: Double
@@ -85,6 +108,9 @@ struct Snapshot: Codable, Sendable, Equatable {
             /// `projected_30d_kwh` becomes `projected30DKwh`.
             let projected30DKwh: Double?
             let projected30DCost: Double?
+            /// Cost while powered on but not working. Present on `month` only,
+            /// and only from newer servers.
+            let idleCost: Double?
         }
     }
 

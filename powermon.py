@@ -691,36 +691,159 @@ class Nvml:
         return out[:limit]
 
 
-class GpuReader:
-    """NVIDIA GPU sampling across every installed device.
+class AmdSysfs:
+    """AMD cards driven by the in-kernel amdgpu driver, read from sysfs.
 
-    Prefers NVML through ctypes; falls back to parsing nvidia-smi when the
-    library cannot be loaded, which keeps behaviour identical on hosts where
-    only the binary is present.
+    No tool or library is involved: the driver publishes plain text files under
+    /sys/class/drm/card<N>/device/. Every file is optional, and one that is
+    missing or unreadable is None rather than 0, exactly as with Nvml.
+
+    Fixture-tested only; there was no AMD hardware to check the file formats
+    against.
+    """
+
+    VENDOR = "0x1002"
+
+    def __init__(self, root: Path = Path("/sys/class/drm")):
+        self.root = Path(root)
+        self.cards: list[Path] = []
+        try:
+            entries = sorted(self.root.iterdir(), key=lambda p: p.name)
+        except OSError:
+            return
+        for entry in entries:
+            # "card0-DP-1" and friends are connectors, not cards.
+            if not re.fullmatch(r"card\d+", entry.name):
+                continue
+            dev = entry / "device"
+            if self._text(dev / "vendor") != self.VENDOR:
+                continue
+            # An APU matches the vendor too. With neither a power sensor nor
+            # VRAM figures there is nothing here worth calling a GPU.
+            hwmon = self._hwmon(dev)
+            if (self._num(self._power_file(hwmon)) is None
+                    and self._num(dev / "mem_info_vram_total") is None):
+                continue
+            self.cards.append(dev)
+
+    @property
+    def available(self) -> bool:
+        return bool(self.cards)
+
+    @staticmethod
+    def _text(path: Path | None) -> str | None:
+        if path is None:
+            return None
+        try:
+            return path.read_text().strip() or None
+        except OSError:
+            return None
+
+    @classmethod
+    def _num(cls, path: Path | None) -> float | None:
+        return _num(cls._text(path))
+
+    @staticmethod
+    def _hwmon(dev: Path) -> Path | None:
+        try:
+            return next(iter(sorted((dev / "hwmon").glob("hwmon*"))), None)
+        except OSError:
+            return None
+
+    @classmethod
+    def _power_file(cls, hwmon: Path | None) -> Path | None:
+        if hwmon is None:
+            return None
+        # Some cards publish the instantaneous reading instead of the average.
+        for name in ("power1_average", "power1_input"):
+            if cls._num(hwmon / name) is not None:
+                return hwmon / name
+        return None
+
+    def _name(self, dev: Path) -> str:
+        return (self._text(dev / "product_name")
+                or f"AMD GPU {self._text(dev / 'device') or 'unknown'}")
+
+    def identify(self) -> list[dict]:
+        out = []
+        for index, dev in enumerate(self.cards):
+            cap = self._num(self._hwmon(dev) and self._hwmon(dev) / "power1_cap")
+            out.append({"index": index, "name": self._name(dev),
+                        "limit_w": cap / 1e6 if cap else None})
+        return out
+
+    def sample(self) -> list[dict]:
+        devices = []
+        for index, dev in enumerate(self.cards):
+            hwmon = self._hwmon(dev)
+
+            def hw(name, scale):
+                value = self._num(hwmon / name) if hwmon else None
+                return value / scale if value is not None else None
+
+            power = self._num(self._power_file(hwmon))
+            used, total = self._num(dev / "mem_info_vram_used"), self._num(dev / "mem_info_vram_total")
+            pwm = hw("pwm1", 1)
+            pwm_max = hw("pwm1_max", 1)
+            devices.append({
+                "index": index,
+                "name": self._name(dev),
+                "power_w": power / 1e6 if power is not None else None,
+                "util": self._num(dev / "gpu_busy_percent"),
+                "mem_used": used / 1048576.0 if used is not None else None,
+                "mem_total": total / 1048576.0 if total is not None else None,
+                "temp": hw("temp1_input", 1000.0),
+                "fan": 100.0 * pwm / (pwm_max if pwm_max and pwm_max > 0 else 255.0)
+                       if pwm is not None else None,
+                "clock_mhz": hw("freq1_input", 1e6),
+                "limit_w": hw("power1_cap", 1e6),
+            })
+        return devices
+
+
+class GpuReader:
+    """GPU sampling across every installed device.
+
+    NVIDIA first: prefers NVML through ctypes; falls back to parsing nvidia-smi
+    when the library cannot be loaded, which keeps behaviour identical on hosts
+    where only the binary is present. AMD cards (amdgpu sysfs) are added after
+    the NVIDIA ones, so a mixed host lists both.
     """
 
     FIELDS = ("index", "power.draw", "utilization.gpu", "memory.used", "memory.total",
               "temperature.gpu", "fan.speed", "clocks.sm")
 
-    def __init__(self, cfg: dict, nvml: "Nvml | None" = None):
+    def __init__(self, cfg: dict, nvml: "Nvml | None" = None,
+                 amd: "AmdSysfs | None" = None):
         want_gpu = bool(cfg["gpu"]["enabled"])
         self.nvml = nvml if nvml is not None else (Nvml() if want_gpu else None)
         if self.nvml is not None and not self.nvml.available:
             self.nvml = None
+        self.amd = amd if amd is not None else (AmdSysfs() if want_gpu else None)
+        if self.amd is not None and not self.amd.available:
+            self.amd = None
         # NVML alone is enough; nvidia-smi is only needed for the fallback path.
-        self.enabled = want_gpu and (self.nvml is not None
-                                     or shutil.which("nvidia-smi") is not None)
+        self.nvidia = want_gpu and (self.nvml is not None
+                                    or shutil.which("nvidia-smi") is not None)
+        self.enabled = want_gpu and (self.nvidia or self.amd is not None)
         self.name = None
         self.power_limit = 350.0
         self.devices: list[dict] = []      # identity per device, by index
         self.fail_count = 0
         self._identify_countdown = 0
-        if self.enabled:
+        if self.nvidia:
             self._identify()
+        if self.amd is not None and self.name is None:
+            self.name = self.amd.identify()[0]["name"]
 
     @property
     def source(self) -> str:
-        return "nvml" if self.nvml is not None else "nvidia-smi"
+        parts = []
+        if self.nvidia or self.amd is None:
+            parts.append("nvml" if self.nvml is not None else "nvidia-smi")
+        if self.amd is not None:
+            parts.append("amdgpu")
+        return "+".join(parts)
 
     def close(self) -> None:
         if self.nvml is not None:
@@ -797,6 +920,23 @@ class GpuReader:
         """Never raises: a driver hiccup yields None values, not a dead sampler."""
         if not self.enabled:
             return {"present": False}
+        sample = self._sample_nvidia() if self.nvidia else None
+        if self.amd is None:
+            return sample
+        if sample is not None and sample.get("error"):
+            # An NVIDIA card we could not read must not vanish from the total.
+            return sample
+        devices = list(sample["devices"]) if sample else []
+        first = max((d["index"] for d in devices), default=-1) + 1
+        for device in self.amd.sample():
+            device["index"] += first
+            devices.append(device)
+        merged = aggregate_gpus(devices)
+        merged.update({"present": True, "procs": sample["procs"] if sample else [],
+                       "devices": devices})
+        return merged
+
+    def _sample_nvidia(self) -> dict:
         if self.nvml is not None:
             return self._sample_nvml()
         rows = self._run([f"--query-gpu={','.join(self.FIELDS)}", "--format=csv,noheader,nounits"])

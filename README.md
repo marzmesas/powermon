@@ -426,7 +426,7 @@ directly and the table below only decides how it is attributed. See
 
 | Component | Source | Trust |
 |---|---|---|
-| GPU watts | every card's own sensor, summed, via NVML (`nvidia-smi` if the library is missing) | **measured**, accurate |
+| GPU watts | every card's own sensor, summed, via NVML (`nvidia-smi` if the library is missing); AMD cards from the `amdgpu` sysfs power file | **measured**, accurate |
 | CPU watts | RAPL package energy counters, all sockets, if readable | **measured** (see below) |
 | CPU watts | otherwise: utilisation curve `idle_w → max_w` | **estimated**, ±20 W |
 | Baseline | configured constant (board, RAM, NVMe, fans) | assumption |
@@ -518,7 +518,8 @@ paths imply, marked as such rather than claimed.
 | Linux, no GPU | estimated or measured CPU, modelled rest | **yes** — same box with `nvidia-smi` hidden |
 | Any host with a `[meter]` | **measured at the wall**, model only attributes it | **yes** — against a simulated plug |
 | Multi-GPU / multi-socket Linux | summed across devices | code paths tested, no such hardware to hand |
-| AMD or Intel GPU | not read; treated as no GPU | not implemented |
+| AMD GPU (`amdgpu` driver) | read from the driver's sysfs files: power, load, memory, temperature; **not verified on hardware**, fixture-tested only | no AMD hardware to hand |
+| Intel GPU | not read; treated as no GPU | not implemented |
 | NVIDIA MIG | reports the physical card; per-instance not attributed | untested, no MIG card to hand |
 | macOS, Windows, *BSD | not supported as a *host* (the menu bar app is a client) | — |
 

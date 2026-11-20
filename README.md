@@ -152,16 +152,30 @@ on, never what a past hour cost.
 
 ## Alerts
 
-Off until you set `alerts.idle_w`. With it set, powermon notices the machine
-drawing more than that many watts **while the GPU is idle** — a stuck process, a
-job you forgot — once it has lasted `after_min` (10). It sends one push, one
-urgent reminder at `remind_min` (60) if it is still going, and one when it
-clears; nothing in between.
+All off until you set a limit. Each alert sends one push when it trips and one
+when it clears (back under for 60 s); nothing in between, so a stuck condition
+cannot turn into a stream of notifications. A sensor that cannot be read neither
+trips nor clears an alert.
+
+| Alert | Keys | Trips when |
+|---|---|---|
+| `idle` | `idle_w`, `after_min` (10), `remind_min` (60) | wall draw is above `idle_w` watts **while the GPU is idle** for `after_min`; one urgent reminder at `remind_min` if it is still going |
+| `gpu_temp` | `gpu_temp_c`, `temp_after_min` (5) | the hottest GPU is above `gpu_temp_c` for `temp_after_min` |
+| `cpu_temp` | `cpu_temp_c`, `temp_after_min` (5) | the CPU is above `cpu_temp_c` for `temp_after_min` |
+| `disk` | `disk_pct` | disk usage is above `disk_pct` percent, immediately |
+| `budget` | `month_budget` | this calendar month's cost so far first exceeds `month_budget` (tariff currency); once per month, and a restart does not repeat it |
 
 Pushes go to an [ntfy](https://ntfy.sh) topic: install the app, subscribe to a
-long random topic name, and put its URL in `alerts.ntfy_url`. Without a URL the
-alert is still reported as `alert.active` in `/api/now`, and the menu bar app's
-icon turns yellow.
+long random topic name, and put its URL in `alerts.ntfy_url`. Set
+`alerts.webhook_url` as well (or instead) and every alert is also sent there as
+an HTTP POST with `Content-Type: application/json` and the body
+`{"title", "message", "priority", "tags", "host", "kind"}`, where `kind` is the
+alert column above. It is a plain JSON POST: no service-specific formatting, so
+a receiver that wants its own shape needs a small adapter in between. Only
+`http://` and `https://` URLs are used, and a failed delivery is logged and
+dropped. Without either URL the alerts are still reported in `/api/now`
+(`alert` for the idle alert, `alerts` for every active one), shown on the
+dashboard, and the menu bar app's icon turns yellow.
 
 ```sh
 curl -d "powermon test" https://ntfy.sh/<your-topic>     # check delivery
@@ -435,8 +449,20 @@ constants. On a host with no GPU and no readable RAPL, every term is modelled.
 |---|---|
 | `GET /api/now` | current sample, period totals, 3-minute sparklines, metadata. `gpu.*` is the host aggregate across every card; `gpu.devices[]` carries each one separately |
 | `GET /api/runs?limit=50` (`&format=csv` for CSV) | training runs, newest first: `id`, `start`, `end` (null while running), `seconds`, `kwh`, `cost`, `peak_w`, `avg_w`, `name`, `running`. `/api/now` also carries the open one as `run` |
-| `GET /api/history?range=24h\|7d\|30d\|90d` | time series (24 h = 5-min averages from raw samples; longer = hourly totals) |
+| `GET /api/history?range=24h\|7d\|30d\|90d` (`&format=csv` for CSV) | time series (24 h = 5-min averages from raw samples; longer = hourly totals) |
 | `GET /healthz` | the same `health` block as `/api/now`: `ok`, `last_sample_age_s`, `coverage_today`, the live CPU/GPU sources, and an `issues` list at `error` / `warn` / `info` |
+| `GET /metrics` | the figures from `/api/now` in Prometheus text format. Needs the token like `/api/*`, except from loopback (see below) |
+
+Prometheus cannot send custom headers, so this documents scraping from the same
+machine over loopback, which needs no token:
+
+```yaml
+scrape_configs:
+  - job_name: powermon
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:8787"]
+```
 
 Useful for logging a run's energy cost from a training script:
 

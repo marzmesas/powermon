@@ -6,11 +6,21 @@ still change shape between minor versions.
 
 ## Unreleased
 
+- **More alerts.** GPU and CPU temperature (`alerts.gpu_temp_c`, `cpu_temp_c`,
+  `temp_after_min`), disk usage (`disk_pct`) and a monthly cost budget
+  (`month_budget`), plus a generic JSON `alerts.webhook_url` beside ntfy. `/api/now`
+  gains `alerts[]` (every active alert; `alert` is unchanged) and the dashboard
+  shows them as warning banners.
+- **Wake from the Mac app.** `/api/now` `meta.mac` carries the NIC address; the menu bar app remembers it and offers a Wake-on-LAN button while the server is unreachable (same LAN only).
 - **Cost per training run.** Each continuous busy stretch is recorded as a run
   with its energy, cost, peak and average draw and the busiest GPU process
   (`activity.run_min_s`, `activity.run_gap_s`). New `/api/runs` (JSON or
   `?format=csv`), `run` in `/api/now`, a "Training runs" card on the dashboard,
   and `pwr run -- <command>` to price a single command.
+
+- **Exports.** `/api/history` gains `?format=csv`, with a CSV link beside the
+  range buttons on the dashboard. New `GET /metrics` serves the `/api/now`
+  figures in Prometheus text format, with the same token rules as `/api/*`.
 
 - **Installer.** `install.sh` sets up the config, an access token, the systemd
   user service and `pwr` in one command, and prints the URL to connect to.

@@ -184,6 +184,18 @@ month_budget = 0           # this month's cost so far, in the tariff currency; o
 # max_cpu_pct = 20
 # skip_if_logged_in = true
 
+# Publish readings to an MQTT broker, with Home Assistant discovery. Off while host is empty.
+# Edit this file to change it: the Settings dialog cannot. Plain MQTT 3.1.1, QoS 0.
+# [mqtt]
+# host = "broker.lan"
+# port = 1883
+# username = ""
+# password = ""
+# tls = false                       # true for brokers on 8883
+# topic = "powermon"                # state goes to <topic>/<hostname>/state
+# discovery_prefix = "homeassistant"
+# interval_s = 30
+
 # Show other powermon machines in one view. Each still runs its own powermon.
 # Comma-separated name=URL, optionally |TOKEN (the peer's read key). The tokens
 # live in this file, so keep it private. Costs are summed only for one currency.

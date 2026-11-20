@@ -569,6 +569,32 @@ def kwh():
         return json.load(r)["totals"]["all"]["kwh"]
 ```
 
+### Home Assistant and MQTT
+
+powermon can publish its readings to an MQTT broker, so Home Assistant (or anything else on the broker) can use them. It is off until `host` is set:
+
+```toml
+[mqtt]
+host = "broker.lan"
+port = 1883           # 8883 with tls = true
+username = ""
+password = ""
+tls = false
+topic = "powermon"
+discovery_prefix = "homeassistant"
+interval_s = 30
+```
+
+Topics, with `<host>` the hostname reduced to `A-Za-z0-9_-`:
+
+- `<topic>/<host>/availability`: `online` (retained); the broker sets `offline` if powermon disappears.
+- `<topic>/<host>/state`: one JSON object every `interval_s`, not retained. A value that is unknown (a GPU that cannot be read, say) is left out, so Home Assistant shows "unknown" instead of 0.
+- `<discovery_prefix>/sensor/<host>/<name>/config` (and `binary_sensor` for busy and alert): retained discovery documents, sent each time powermon connects.
+
+Home Assistant then lists one device, "powermon `<host>`", with sensors for power, CPU and GPU power, energy, total cost, cost per hour, cost today and this month, CPU and GPU temperature and GPU utilisation, plus busy and alert. Add the **Energy** sensor (kWh, all-time total) to the Energy dashboard as the consumption source. The currency of the cost sensors is read when powermon connects, so restart it after changing the tariff currency.
+
+This section is not editable from the Settings dialog, and `--show-config` hides the password. If the broker is down, powermon retries in the background (5 s, doubling to 5 min) and `/api/now` `health` carries a `mqtt_disconnected` warning meanwhile. There is no QoS 1/2 and no subscribing. This has been tested against a simulated broker only, not a real one or a real Home Assistant.
+
 ## Reference
 
 <details>

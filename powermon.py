@@ -84,6 +84,10 @@ DEFAULTS = {
     "suspend": {"after_idle_min": 0.0, "command": "systemctl suspend",
                 "max_cpu_pct": 20.0, "skip_if_logged_in": True},
     "peers": {"hosts": "", "poll_s": 15.0, "timeout": 4.0},
+    # Empty host = off. Not editable from the dashboard: it holds a credential and
+    # names a host to connect to.
+    "mqtt": {"host": "", "port": 1883, "username": "", "password": "", "tls": False,
+             "topic": "powermon", "discovery_prefix": "homeassistant", "interval_s": 30.0},
 }
 
 
@@ -2747,6 +2751,11 @@ def health(monitor: Monitor, period_totals: dict, cfg: dict,
         issues.append({"level": "warn", "code": "tariff_fallback",
                        "message": "The dynamic price could not be fetched; energy is being "
                                   "billed at the fallback tariff.rate."})
+    mqtt = getattr(monitor, "mqtt", None)   # set by main() only when [mqtt] host is
+    if mqtt is not None and not mqtt.connected:
+        issues.append({"level": "warn", "code": "mqtt_disconnected",
+                       "message": "Not connected to the MQTT broker; readings are not "
+                                  "being published."})
     if monitor.cpu.source != "rapl":
         issues.append({"level": "info", "code": "cpu_estimated",
                        "message": "CPU power is modelled from utilisation, not measured "
@@ -3314,6 +3323,241 @@ def revoke_key(cfg: dict, cfg_path: Path, name: str) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- mqtt
+#
+# Publish-only MQTT 3.1.1, by hand: no subscribe, QoS 0 only. The packet builders
+# are pure so tests can compare bytes; MqttPublisher is the thread around them.
+
+
+def mqtt_str(text: str) -> bytes:
+    raw = text.encode("utf-8")
+    return len(raw).to_bytes(2, "big") + raw
+
+
+def mqtt_remaining_length(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        n, digit = divmod(n, 128)
+        out.append(digit | (128 if n else 0))
+        if not n:
+            return bytes(out)
+
+
+def mqtt_connect(client_id: str, keepalive: int, username: str = "", password: str = "",
+                 will_topic: str = "", will_payload: bytes = b"") -> bytes:
+    flags = 0x02                                   # clean session
+    body = mqtt_str(client_id)
+    if will_topic:
+        flags |= 0x04 | 0x20                       # will, retained
+        body += mqtt_str(will_topic) + len(will_payload).to_bytes(2, "big") + will_payload
+    if username:
+        flags |= 0x80
+        body += mqtt_str(username)
+        if password:                               # 3.1.1: no password without a username
+            flags |= 0x40
+            body += mqtt_str(password)
+    head = mqtt_str("MQTT") + bytes([4, flags]) + keepalive.to_bytes(2, "big")
+    return b"\x10" + mqtt_remaining_length(len(head) + len(body)) + head + body
+
+
+def mqtt_publish(topic: str, payload: bytes, retain: bool = False) -> bytes:
+    body = mqtt_str(topic) + payload
+    return bytes([0x30 | int(retain)]) + mqtt_remaining_length(len(body)) + body
+
+
+MQTT_PINGREQ, MQTT_DISCONNECT = b"\xc0\x00", b"\xe0\x00"
+
+
+def mqtt_config(cfg: dict) -> dict:
+    """The validated [mqtt] section; a bad value is a fatal startup error."""
+    m = {**DEFAULTS["mqtt"], **cfg.get("mqtt", {})}
+    m["host"] = str(m["host"]).strip()
+    if isinstance(m["port"], bool) or not isinstance(m["port"], int) or not 0 < m["port"] < 65536:
+        raise ValueError("mqtt.port must be a whole number from 1 to 65535")
+    m["interval_s"] = float(m["interval_s"])
+    if not m["interval_s"] > 0:
+        raise ValueError("mqtt.interval_s must be above 0")
+    for key in ("topic", "discovery_prefix"):
+        m[key] = str(m[key]).strip("/")
+        if not m[key] or re.search(r"[+#\s]", m[key]):
+            raise ValueError(f"mqtt.{key} must be set and contain no spaces, + or #")
+    return m
+
+
+def mqtt_node(hostname: str | None = None) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]", "_", hostname or socket.gethostname())
+
+
+def mqtt_state(payload: dict) -> dict:
+    """The /state JSON. A None is left out, so Home Assistant shows "unknown", not 0."""
+    power, gpu, cpu = payload["power"], payload["gpu"], payload["cpu"]
+    tot = payload["totals"]
+    values = {"power_w": power["total_w"], "cpu_w": power["cpu_w"], "gpu_w": power["gpu_w"],
+              "energy_kwh": tot["all"]["kwh"], "cost_total": tot["all"]["cost"],
+              "cost_per_h": power["cost_per_h"], "today_cost": tot["today"]["cost"],
+              "month_cost": tot["month"]["cost"],
+              "busy": "ON" if payload["busy"] else "OFF",
+              "alert": "ON" if payload["alert"].get("active") else "OFF",
+              "gpu_temp": gpu["temp"], "cpu_temp": cpu["temp"], "gpu_util": gpu["util"]}
+    return {k: v for k, v in values.items() if v is not None}
+
+
+def mqtt_discovery(m: dict, node: str, currency: str, version: str) -> list[tuple[str, dict]]:
+    """Retained Home Assistant discovery configs: [(topic, payload_dict)]."""
+    base = f"{m['topic']}/{node}"
+    device = {"identifiers": [f"powermon_{node}"], "name": f"powermon {node}",
+              "manufacturer": "powermon", "sw_version": version}
+    power = {"device_class": "power", "unit_of_measurement": "W", "state_class": "measurement"}
+    temp = {"device_class": "temperature", "unit_of_measurement": "°C",
+            "state_class": "measurement"}
+    # Monetary sensors must not be "measurement"; only the running total is "total".
+    money = {"device_class": "monetary", "unit_of_measurement": currency}
+    rows = [  # (component, object, name, state key, extra)
+        ("sensor", "power", "Power", "power_w", power),
+        ("sensor", "cpu_power", "CPU power", "cpu_w", power),
+        ("sensor", "gpu_power", "GPU power", "gpu_w", power),
+        ("sensor", "energy", "Energy", "energy_kwh",
+         {"device_class": "energy", "unit_of_measurement": "kWh", "state_class": "total_increasing"}),
+        ("sensor", "cost_total", "Cost total", "cost_total", {**money, "state_class": "total"}),
+        # Not a currency amount (it is per hour), so no monetary class.
+        ("sensor", "cost_per_h", "Cost per hour", "cost_per_h",
+         {"unit_of_measurement": f"{currency}/h"}),
+        ("sensor", "today_cost", "Cost today", "today_cost", money),
+        ("sensor", "month_cost", "Cost this month", "month_cost", money),
+        ("binary_sensor", "busy", "Busy", "busy", {}),
+        ("binary_sensor", "alert", "Alert", "alert", {}),
+        ("sensor", "gpu_temp", "GPU temperature", "gpu_temp", temp),
+        ("sensor", "cpu_temp", "CPU temperature", "cpu_temp", temp),
+        ("sensor", "gpu_util", "GPU utilisation", "gpu_util",
+         {"unit_of_measurement": "%", "state_class": "measurement"}),
+    ]
+    return [(f"{m['discovery_prefix']}/{comp}/{node}/{obj}/config",
+             {"name": name, "unique_id": f"powermon_{node}_{obj}",
+              "state_topic": f"{base}/state",
+              "value_template": "{{ value_json.%s }}" % key,
+              "availability_topic": f"{base}/availability", "device": device, **extra})
+            for comp, obj, name, key, extra in rows]
+
+
+class MqttError(Exception):
+    pass
+
+
+class MqttPublisher:
+    """Own daemon thread: connect, announce, publish state, reconnect with backoff.
+
+    `connect(host, port, tls)` returns a socket; `wait(seconds)` returns True when
+    asked to stop. Both are injectable so tests need no real time or broker.
+    """
+    KEEPALIVE = 60
+
+    def __init__(self, m: dict, get_payload, connect=None, wait=None, clock=time.monotonic):
+        self.m, self.get_payload, self.clock = m, get_payload, clock
+        self.node = mqtt_node()
+        self.base = f"{m['topic']}/{self.node}"
+        self.connected, self.last_error = False, ""
+        self._stop, self._sock, self._last_send = threading.Event(), None, 0.0
+        self._lock = threading.Lock()
+        self._connect = connect or self._open
+        self._wait = wait or self._stop.wait
+        self._thread = None
+
+    @staticmethod
+    def _open(host: str, port: int, tls: bool):
+        sock = socket.create_connection((host, port), timeout=10)
+        if tls:
+            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+        return sock
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self.run, name="mqtt", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        with self._lock:
+            if self.connected and self._sock:
+                try:
+                    self._sock.sendall(MQTT_DISCONNECT)
+                except OSError:
+                    pass
+        self._close()
+        if self._thread:
+            self._thread.join(timeout=2)
+
+    def _close(self) -> None:
+        self.connected = False
+        sock, self._sock = self._sock, None
+        if sock:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def _send(self, data: bytes) -> None:
+        with self._lock:
+            self._sock.sendall(data)
+        self._last_send = self.clock()
+
+    def _publish(self, topic: str, payload: bytes, retain: bool) -> None:
+        self._send(mqtt_publish(topic, payload, retain))
+
+    def open_session(self) -> None:
+        """Connect and check CONNACK; raises MqttError or OSError."""
+        m = self.m
+        sock = self._connect(m["host"], m["port"], bool(m["tls"]))
+        sock.settimeout(10)
+        self._sock = sock
+        sock.sendall(mqtt_connect(f"powermon-{self.node}", self.KEEPALIVE, m["username"],
+                                  m["password"], f"{self.base}/availability", b"offline"))
+        ack = b""
+        while len(ack) < 4:
+            chunk = sock.recv(4 - len(ack))
+            if not chunk:
+                raise MqttError("broker closed the connection before CONNACK")
+            ack += chunk
+        if ack[0] != 0x20 or ack[1] != 2 or ack[3] != 0:
+            raise MqttError(f"broker refused the connection (CONNACK code {ack[3]})")
+        self.connected = True
+
+    def announce(self, payload: dict) -> None:
+        self._publish(f"{self.base}/availability", b"online", True)
+        meta = payload["meta"]
+        for topic, doc in mqtt_discovery(self.m, self.node, meta["currency"], meta["version"]):
+            self._publish(topic, json.dumps(doc).encode("utf-8"), True)
+
+    def run(self) -> None:
+        delay = 5.0
+        while not self._stop.is_set():
+            try:
+                self.open_session()
+                delay = 5.0
+                payload = self.get_payload()
+                self.announce(payload)
+                next_state = self.clock()
+                while not self._stop.is_set():
+                    now = self.clock()
+                    if now >= next_state:
+                        self._publish(f"{self.base}/state",
+                                      json.dumps(mqtt_state(self.get_payload())).encode("utf-8"),
+                                      False)
+                        next_state = now + self.m["interval_s"]
+                    elif now - self._last_send >= self.KEEPALIVE:
+                        self._send(MQTT_PINGREQ)
+                    # Wake in time for a ping even when the state interval is long.
+                    if self._wait(max(0.0, min(next_state - self.clock(), self.KEEPALIVE / 2))):
+                        break
+                return
+            except Exception as exc:   # the thread must outlive any broker trouble
+                self._close()
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                print(f"powermon: mqtt: {self.last_error}; retrying in {delay:.0f} s",
+                      file=sys.stderr, flush=True)
+                if self._wait(delay):
+                    return
+                delay = min(delay * 2, 300.0)
+
+
 def main() -> int:
     args = sys.argv[1:]
     # A config path may still be given positionally, as before.
@@ -3334,7 +3578,7 @@ def main() -> int:
         shown = {section: dict(values) for section, values in cfg.items()}
         for section, key in [("server", "token"), ("tariff", "dynamic_url"),
                              ("tariff", "dynamic_headers"), ("meter", "http_url"),
-                             ("meter", "http_headers"), ("peers", "hosts"), *(n.split(".") for n in SECRET_SETTINGS)]:
+                             ("meter", "http_headers"), ("peers", "hosts"), ("mqtt", "password"), *(n.split(".") for n in SECRET_SETTINGS)]:
             if shown.get(section, {}).get(key):
                 shown[section][key] = "(redacted)"
         print(json.dumps(shown, indent=2, default=str))
@@ -3357,6 +3601,7 @@ def main() -> int:
     try:
         build_policies(cfg, None)   # the same checks a dashboard change must pass
         peers_config(cfg)
+        mqtt_config(cfg)
     except (TypeError, ValueError) as exc:
         fatal = fatal or str(exc)
     if fatal:
@@ -3379,6 +3624,11 @@ def main() -> int:
     threading.Thread(target=monitor.run, name="sampler", daemon=True).start()
 
     Handler.monitor, Handler.store, Handler.cfg, Handler.cfg_path = monitor, store, cfg, cfg_path
+    publisher = None
+    if mqtt_config(cfg)["host"]:
+        publisher = monitor.mqtt = MqttPublisher(
+            mqtt_config(cfg), lambda: now_payload(monitor, store, cfg))
+        publisher.start()
     host, port = cfg["server"]["host"], int(cfg["server"]["port"])
     httpd = ThreadingHTTPServer((host, port), Handler)
 
@@ -3409,6 +3659,8 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if publisher:
+            publisher.stop()
         monitor.stop()
         httpd.server_close()
     return 0

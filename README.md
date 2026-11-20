@@ -1,63 +1,282 @@
-# powermon
+<p align="center">
+  <img src="macos/PowermonMenuBar/Resources/Assets.xcassets/AppIcon.appiconset/icon_128x128@2x.png" width="128" alt="powermon icon">
+</p>
 
-Real-time power, resource and cost monitor for this training box
-(Ryzen 9 3900X + RTX 3090, Ubuntu 22.04).
+<h1 align="center">powermon</h1>
 
-Runs as a systemd **user** service, samples every 2 s, keeps history in SQLite,
-and serves a dashboard plus a JSON API on `127.0.0.1:8787`.
+<p align="center">
+  <b>What your GPU box is drawing right now, and what it is costing you.</b><br>
+  A tiny power, resource and cost monitor for Linux training machines.
+</p>
 
-- **Dashboard** — <http://localhost:8787>
-- **Terminal** — `pwr` (snapshot) · `pwr -w` (live) · `pwr --json`. For a remote
-  instance, set `POWERMON_TOKEN` or pass `--token`.
-- **Overhead** — 0.25 % of one core and ~35 MB RAM, measured on the reference
-  box at the default 2 s interval. GPU telemetry comes from `libnvidia-ml.so`
-  through `ctypes` rather than forking `nvidia-smi`, which is what took it from
-  2.35 % (47 ms per sample) down to 5 ms. Runs at `Nice=10` with idle I/O
-  priority so it never competes with a training job.
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#electricity-price">Electricity price</a> ·
+  <a href="#alerts">Alerts</a> ·
+  <a href="#remote-access">Remote access</a> ·
+  <a href="#how-accurate-is-it">Accuracy</a> ·
+  <a href="#api">API</a>
+</p>
 
-## Install
+<p align="center">
+  <img src="docs/dashboard.png" width="820" alt="The powermon dashboard during a training run (sample data)">
+</p>
 
-Standard library Python only — nothing to `pip install`.
+## What you get
+
+- **Watts at the wall, live**, split into GPU, CPU and everything else.
+- **Real money**: cost per hour, today, this month and projected, at a flat,
+  time-of-day or live market price.
+- **Idle share**: what you paid to leave the machine on while it was not
+  training.
+- **A push to your phone** when the box burns power with the GPU idle.
+- **Three ways to look**: a web dashboard, `pwr` in the terminal, and a macOS
+  menu bar app.
+- **Nothing to install**: one Python file, standard library only. It uses
+  0.25 % of one core and about 35 MB of RAM, and runs at low priority so it
+  never competes with a training job.
+
+## Quick start
+
+On the Linux machine you want to measure (Python 3.10+, systemd):
 
 ```sh
 git clone https://github.com/marzmesas/powermon.git ~/powermon
-cd ~/powermon
-cp config.example.toml config.toml     # then edit tariff.rate
-sed -e "s|/home/marzmesas|$HOME|g" systemd/powermon.service \
-    > ~/.config/systemd/user/powermon.service
-systemctl --user daemon-reload
-systemctl --user enable --now powermon
-ln -sf ~/powermon/pwr ~/.local/bin/pwr
-sudo loginctl enable-linger "$USER"    # so it survives logout and starts at boot
+~/powermon/install.sh
 ```
 
-Open <http://localhost:8787>. Works without a GPU (GPU panels hide themselves)
-and without RAPL (CPU power falls back to a utilisation model).
+The installer creates `config.toml` with a fresh access token, starts powermon
+as a systemd user service that survives logout and reboot, links `pwr` into
+`~/.local/bin`, and prints the URL and token to use from other devices.
 
-## What is supported
+| Flag | Effect |
+|---|---|
+| `--local` | listen on `127.0.0.1` only, no token |
+| `--rapl` | also install the udev rule for [measured CPU power](#measured-cpu-power) (needs sudo) |
 
-Only the first row has been run on real hardware; the rest is what the code
-paths imply, marked as such rather than claimed.
+Running it again never touches an existing `config.toml`.
 
-| Host | Wall power | Verified |
+Then:
+
+1. **Open the dashboard** at <http://localhost:8787>, or at the URL the
+   installer printed from another device.
+2. **Set your [electricity price](#electricity-price)** in `config.toml`.
+3. **Optionally** turn on [alerts](#alerts) and install the
+   [menu bar app](macos/README.md).
+
+It works without a GPU (the GPU panels hide themselves) and without readable
+CPU energy counters (CPU power is then estimated).
+
+## Ways to look at it
+
+| Client | What it is |
+|---|---|
+| **Web dashboard** | served by powermon itself; the full view, including history |
+| **`pwr`** | terminal readout: `pwr` (snapshot), `pwr -w` (live), `pwr --json`. For a remote instance set `POWERMON_TOKEN` or pass `--token` |
+| **macOS menu bar app** | wall watts in the menu bar, and a panel with meters, totals and GPU processes. See [`macos/`](macos/README.md) |
+
+The dashboard shows:
+
+- **Hero** — watts at the wall right now, cost per hour, cost if it ran all month.
+- **Meters** — GPU power against its 350 W limit, GPU load / memory, CPU power,
+  RAM, disk.
+- **Tiles** — today, month to date, projected month, **idle share** (what you
+  paid to leave it powered on and not training), all time.
+- **Charts** — power draw stacked by component, kWh + cost per hour/day,
+  temperatures. 24 h / 7 d / 30 d. Every chart has a table view and a tooltip;
+  arrow keys move the crosshair.
+- **GPU processes** — what's actually on the card.
+
+## Configuration
+
+Everything lives in `config.toml`; [`config.example.toml`](config.example.toml)
+documents every key. Restart after editing:
+
+```sh
+systemctl --user restart powermon
+```
+
+| Section | What it controls |
+|---|---|
+| `[tariff]` | what a kWh costs: see [electricity price](#electricity-price) |
+| `[alerts]` | the idle-draw push: see [alerts](#alerts) |
+| `[server]` | address, port, token: see [remote access](#remote-access) |
+| `[meter]` | a real wall meter: see [using a real meter](#using-a-real-meter) |
+| `[power]`, `[cpu]` | the model's constants: see [calibrating](#calibrating-against-reality) |
+| `[sampling]` | interval and how long raw samples are kept |
+| `[activity]` | what counts as "training" rather than idle but powered on |
+
+## Electricity price
+
+`[tariff]` covers the three ways electricity is sold; pick the one on your bill.
+
+| `mode` | Contract | You set |
 |---|---|---|
-| Linux + NVIDIA + readable RAPL | measured GPU, measured CPU, modelled rest | **yes** — Ryzen 9 3900X + RTX 3090, Ubuntu 22.04 |
-| Linux + NVIDIA, no RAPL | measured GPU, **estimated** CPU (±20 W), modelled rest | **yes** — same box without the udev rule |
-| Linux, no GPU | estimated or measured CPU, modelled rest | **yes** — same box with `nvidia-smi` hidden |
-| Any host with a `[meter]` | **measured at the wall**, model only attributes it | **yes** — against a simulated plug |
-| Multi-GPU / multi-socket Linux | summed across devices | code paths tested, no such hardware to hand |
-| AMD or Intel GPU | not read; treated as no GPU | not implemented |
-| NVIDIA MIG | reports the physical card; per-instance not attributed | untested, no MIG card to hand |
-| macOS, Windows, *BSD | not supported as a *host* (the menu bar app is a client) | — |
+| `flat` | one price all day | `rate` |
+| `tou` | fixed prices by time of day | `tou_weekday`, optionally `tou_weekend` and `tou_holidays` |
+| `dynamic` | the price follows the market | `dynamic_source`, and usually `dynamic_surcharge` |
 
-Python 3.10 or newer, standard library only. `nvidia-smi` is optional — NVML is
-used when present and is what the daemon prefers.
+A dynamic price can come from three places:
 
-Without a `[meter]`, the wall figure is an **estimate**: the GPU and CPU terms
-are real sensors, but `baseline_w` and `psu_efficiency` are configured
-constants. On a host with no GPU and no readable RAPL, every term is modelled.
+| `dynamic_source` | Covers | Needs |
+|---|---|---|
+| `energy-charts` | day-ahead spot prices for European bidding zones (Fraunhofer ISE, CC BY 4.0) | `dynamic_zone`, e.g. `DE-LU` |
+| `pvpc` | Spain's regulated consumer price (Red Eléctrica) | nothing |
+| `http` | anywhere: the current price from any JSON endpoint, such as a Home Assistant sensor from your supplier's integration | `dynamic_url`, `dynamic_json_path` |
 
-## Where the numbers come from
+A spot price is not what you pay: contracts add grid fees, levies and a margin
+per kWh. Put that sum in `dynamic_surcharge`. `tax_pct` is then added to every
+price in the section, so leave it at 0 if the figures you typed already include
+tax.
+
+Dynamic mode needs outbound HTTP(S). While a price cannot be fetched the daemon
+bills at `rate` and says so in the health banner. Each hour is stored with the
+price it was billed at, so changing the tariff changes what you pay from then
+on, never what a past hour cost.
+
+## Alerts
+
+Off until you set `alerts.idle_w`. With it set, powermon notices the machine
+drawing more than that many watts **while the GPU is idle** — a stuck process, a
+job you forgot — once it has lasted `after_min` (10). It sends one push, one
+urgent reminder at `remind_min` (60) if it is still going, and one when it
+clears; nothing in between.
+
+Pushes go to an [ntfy](https://ntfy.sh) topic: install the app, subscribe to a
+long random topic name, and put its URL in `alerts.ntfy_url`. Without a URL the
+alert is still reported as `alert.active` in `/api/now`, and the menu bar app's
+icon turns yellow.
+
+```sh
+curl -d "powermon test" https://ntfy.sh/<your-topic>     # check delivery
+```
+
+## Remote access
+
+The installer already sets a token and listens on every interface, so the URL
+it prints works from any device that can reach the machine. With `--local`,
+powermon listens on `127.0.0.1` only and you use an SSH tunnel instead.
+
+**The rule:** clients on the machine itself (`127.0.0.1`) never need the token,
+so `pwr` keeps working unconfigured. Every other client must present it, as
+`?token=…`, an `X-Powermon-Token` header, or the `powermon_token` cookie. Open
+the URL with `?token=…` once and the cookie is set for a year. Listening beyond
+loopback without a token is refused at startup.
+
+The token travels over **plain HTTP**: fine on a tailnet or a trusted LAN, not
+something to expose to the internet.
+
+### Tailscale (recommended)
+
+Puts the dashboard on a private network reachable from anywhere, with nothing
+exposed to the public internet:
+
+```sh
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+```
+
+Then from your laptop or phone, both on the tailnet, open
+`http://<your-server>:8787/?token=<your token>`. Add it to your phone's home
+screen and it behaves like an app.
+
+### SSH tunnel
+
+Needs no token and nothing listening remotely, so it works with `--local`:
+
+```sh
+ssh -L 8787:127.0.0.1:8787 <user>@<your-server>
+```
+
+Then open <http://localhost:8787> on your laptop.
+
+<details>
+<summary><b>Choosing a bind address</b></summary>
+
+| `server.host` | Who can reach it |
+|---|---|
+| `127.0.0.1` (what `--local` sets) | this machine only — SSH tunnel for anything else |
+| your Tailscale IP | the tailnet only, not the LAN |
+| `0.0.0.0` | tailnet **and** LAN (token still required) |
+
+The token is a shared secret over **plain HTTP** — fine on a tailnet or a trusted
+LAN, not something to expose to the internet. For that, put Caddy in front for
+TLS and real auth.
+
+</details>
+
+<details>
+<summary><b>Named keys: one per client, revocable</b></summary>
+
+One shared token cannot be withdrawn from a single client. Add
+keys instead, and revoke them one at a time:
+
+```sh
+./powermon.py --add-key grafana --scope read    # prints the token once
+./powermon.py --add-key laptop  --scope admin
+./powermon.py --revoke-key grafana
+systemctl --user restart powermon               # keys load at startup
+```
+
+They are stored hashed in `server.keys_file`, so that file is not itself a
+credential, and the token is shown once because it is never kept. `server.token`
+still works alongside them as a one-key shorthand. Every current route is
+read-only, so `admin` grants nothing extra today — it exists for the first route
+that changes something.
+
+Repeated wrong keys from one address are slowed: five free attempts, then a
+delay doubling to 30 s. A correct key is never delayed, even from an address
+that has been guessing, so one bad client cannot lock out the rest.
+
+</details>
+
+<details>
+<summary><b>HTTPS</b></summary>
+
+Set `server.tls_cert` and `server.tls_key` to serve HTTPS directly. A
+self-signed certificate is fine on a tailnet:
+
+```sh
+openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+  -keyout key.pem -out cert.pem -subj "/CN=$(hostname)"
+```
+
+</details>
+
+<details>
+<summary><b>Behind a reverse proxy (Caddy, nginx, Traefik)</b></summary>
+
+Caddy, nginx and Traefik connect from this machine,
+so without configuration every request they forward would look like loopback and
+skip the token. Set `server.trusted_proxies` to the proxy's address and its
+`X-Forwarded-For` header is used instead — from anything not listed there, the
+header is ignored, so it cannot be spoofed. `server.require_token_always = true`
+removes the loopback exemption entirely.
+
+With `trusted_proxies = "127.0.0.1"` set, and powermon left on loopback:
+
+```caddyfile
+# Caddy: real certificate, powermon never exposed directly
+powermon.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+```nginx
+# nginx: X-Forwarded-For is what powermon reads, so it must be set
+location / {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+Caddy sets `X-Forwarded-For` by default; nginx does not, so the line above is
+required. Without it every proxied request arrives as bare loopback and skips
+the token.
+
+</details>
+
+## How accurate is it
 
 ```
 wall_watts = (cpu_watts + gpu_watts + baseline_watts) / psu_efficiency
@@ -65,7 +284,7 @@ wall_watts = (cpu_watts + gpu_watts + baseline_watts) / psu_efficiency
 
 …unless a real meter is configured, in which case the wall figure is measured
 directly and the table below only decides how it is attributed. See
-[using a real meter](#using-a-real-meter-recommended-if-you-have-one).
+[using a real meter](#using-a-real-meter).
 
 | Component | Source | Trust |
 |---|---|---|
@@ -80,36 +299,23 @@ one that actually moves during training — is real; the constant terms are wher
 the error lives, and they mostly cancel out when you compare one run to another.
 The dashboard states which CPU source is live in the header.
 
-### Two things worth doing
+### Measured CPU power
 
-**1. Enable measured CPU power** (turns "estimated" into "measured"):
-
-```sh
-sudo cp ~/powermon/90-rapl-readable.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=powercap
-systemctl --user restart powermon
-```
-
-Read the security note in that rules file first. Short version: these counters
-were restricted because a *very* high-frequency reader can mount a power
-side-channel attack against crypto on the same machine; sampling every 2 s is
-orders of magnitude too slow to matter, and this is a single-user box. Skip it
-on a shared host and the estimate stays in place.
-
-**2. Survive logout / reboot — done.** Lingering is enabled
-(`loginctl show-user marzmesas -p Linger` → `Linger=yes`), so the service starts
-at boot and keeps running with nobody logged in.
-
-Without it, a systemd *user* service only lives as long as a login session, and
-this box would have been relying on GDM auto-login to start it — a coincidence
-that would break the day auto-login is turned off or the desktop is removed. If
-you ever rebuild this machine, re-run:
+Without it the CPU term is estimated to about ±20 W. To read the real energy
+counters:
 
 ```sh
-sudo loginctl enable-linger marzmesas
+~/powermon/install.sh --rapl
 ```
 
-### Using a real meter (recommended if you have one)
+This installs `90-rapl-readable.rules`, which makes the counters readable
+without root. Read the security note in that file first. Short version: the
+counters were restricted because a *very* high-frequency reader can mount a
+power side-channel attack against crypto on the same machine; sampling every
+2 s is orders of magnitude too slow for that. Skip it on a shared host and the
+estimate stays in place.
+
+### Using a real meter
 
 Everything above is a model. If a UPS, smart plug or metered PDU already
 measures this machine, point powermon at it and the headline number becomes a
@@ -162,167 +368,28 @@ below gets better:
 `systemctl --user restart powermon` after editing. Past costs are **not**
 retroactively rewritten — each hour stores the tariff it was billed at.
 
-## Configuration
+### Supported hosts
 
-Everything lives in `config.toml`. The one you'll actually change:
+Only the first row has been run on real hardware; the rest is what the code
+paths imply, marked as such rather than claimed.
 
-```toml
-[tariff]
-rate = 0.15        # your price per kWh
-```
+| Host | Wall power | Verified |
+|---|---|---|
+| Linux + NVIDIA + readable RAPL | measured GPU, measured CPU, modelled rest | **yes** — Ryzen 9 3900X + RTX 3090, Ubuntu 22.04 |
+| Linux + NVIDIA, no RAPL | measured GPU, **estimated** CPU (±20 W), modelled rest | **yes** — same box without the udev rule |
+| Linux, no GPU | estimated or measured CPU, modelled rest | **yes** — same box with `nvidia-smi` hidden |
+| Any host with a `[meter]` | **measured at the wall**, model only attributes it | **yes** — against a simulated plug |
+| Multi-GPU / multi-socket Linux | summed across devices | code paths tested, no such hardware to hand |
+| AMD or Intel GPU | not read; treated as no GPU | not implemented |
+| NVIDIA MIG | reports the physical card; per-instance not attributed | untested, no MIG card to hand |
+| macOS, Windows, *BSD | not supported as a *host* (the menu bar app is a client) | — |
 
-Other keys: `server.host` / `server.port` / `server.token` (see
-[remote access](#reaching-it-from-your-laptop-or-phone)),
-`sampling.interval`, `sampling.raw_retention_days`,
-`power.baseline_w`, `power.psu_efficiency`, `cpu.*`, `activity.*` (what counts
-as "training" rather than idle-but-powered-on).
+Python 3.10 or newer, standard library only. `nvidia-smi` is optional — NVML is
+used when present and is what the daemon prefers.
 
-## Alerts
-
-Off until you set `alerts.idle_w`. With it set, powermon notices the machine
-drawing more than that many watts **while the GPU is idle** — a stuck process, a
-job you forgot — once it has lasted `after_min` (10). It sends one push, one
-urgent reminder at `remind_min` (60) if it is still going, and one when it
-clears; nothing in between.
-
-Pushes go to an [ntfy](https://ntfy.sh) topic: install the app, subscribe to a
-long random topic name, and put its URL in `alerts.ntfy_url`. Without a URL the
-alert is still reported as `alert.active` in `/api/now`, and the menu bar app's
-icon turns yellow.
-
-```sh
-curl -d "powermon test" https://ntfy.sh/<your-topic>     # check delivery
-```
-
-## Reaching it from your laptop or phone
-
-Out of the box the service listens on `127.0.0.1` only, so nothing off this
-machine can reach it — use the [SSH tunnel](#ssh-tunnel-no-install-nothing-listening-remotely)
-and you are done. To let other devices connect directly, open the bind address
-**and set a token**, in `config.toml`:
-
-```toml
-[server]
-host = "0.0.0.0"   # every interface, including Tailscale
-token = "..."      # python3 -c "import secrets; print(secrets.token_urlsafe(18))"
-```
-
-Then `systemctl --user restart powermon`. Widening `host` without setting a
-token is refused at startup: powermon exits before it opens the socket rather
-than serving your data to anyone who can reach the port.
-
-**Access rule:** loopback clients (`127.0.0.1`) never need the token, so `pwr` and
-anything else on this box keeps working unconfigured. Every other client must
-present it, as `?token=…`, an `X-Powermon-Token` header, or the `powermon_token`
-cookie. Open the URL with `?token=…` once and the cookie is set for a year, so
-the token stops showing up in the address bar.
-
-**Named keys.** One shared token cannot be withdrawn from a single client. Add
-keys instead, and revoke them one at a time:
-
-```sh
-./powermon.py --add-key grafana --scope read    # prints the token once
-./powermon.py --add-key laptop  --scope admin
-./powermon.py --revoke-key grafana
-systemctl --user restart powermon               # keys load at startup
-```
-
-They are stored hashed in `server.keys_file`, so that file is not itself a
-credential, and the token is shown once because it is never kept. `server.token`
-still works alongside them as a one-key shorthand. Every current route is
-read-only, so `admin` grants nothing extra today — it exists for the first route
-that changes something.
-
-Repeated wrong keys from one address are slowed: five free attempts, then a
-delay doubling to 30 s. A correct key is never delayed, even from an address
-that has been guessing, so one bad client cannot lock out the rest.
-
-**TLS.** Set `server.tls_cert` and `server.tls_key` to serve HTTPS directly. A
-self-signed certificate is fine on a tailnet:
-
-```sh
-openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
-  -keyout key.pem -out cert.pem -subj "/CN=$(hostname)"
-```
-
-**Behind a reverse proxy:** Caddy, nginx and Traefik connect from this machine,
-so without configuration every request they forward would look like loopback and
-skip the token. Set `server.trusted_proxies` to the proxy's address and its
-`X-Forwarded-For` header is used instead — from anything not listed there, the
-header is ignored, so it cannot be spoofed. `server.require_token_always = true`
-removes the loopback exemption entirely.
-
-With `trusted_proxies = "127.0.0.1"` set, and powermon left on loopback:
-
-```caddyfile
-# Caddy: real certificate, powermon never exposed directly
-powermon.example.com {
-    reverse_proxy 127.0.0.1:8787
-}
-```
-
-```nginx
-# nginx: X-Forwarded-For is what powermon reads, so it must be set
-location / {
-    proxy_pass http://127.0.0.1:8787;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
-```
-
-Caddy sets `X-Forwarded-For` by default; nginx does not, so the line above is
-required. Without it every proxied request arrives as bare loopback and skips
-the token.
-
-### Tailscale (recommended)
-
-Puts the dashboard on a private network reachable from anywhere, with nothing
-exposed to the public internet:
-
-```sh
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-tailscale ip -4          # the address to use
-```
-
-Then from your Mac or phone (both on the tailnet):
-`http://<tailscale-ip>:8787/?token=<your token>` — or use the MagicDNS name,
-`http://<your-server>:8787/?token=…`. Add it to your phone's home screen
-and it behaves like an app.
-
-### SSH tunnel (no install, nothing listening remotely)
-
-Works with the default config — no `server.host` change, no token.
-
-```sh
-ssh -L 8787:127.0.0.1:8787 <user>@<your-server>
-```
-
-Then open `http://localhost:8787` on the Mac. The tunnel arrives as loopback, so
-**no token is needed** this way.
-
-### Choosing a bind address
-
-| `server.host` | Who can reach it |
-|---|---|
-| `127.0.0.1` (default) | this machine only — SSH tunnel for anything else |
-| your Tailscale IP | the tailnet only, not the LAN |
-| `0.0.0.0` | tailnet **and** LAN (token still required) |
-
-The token is a shared secret over **plain HTTP** — fine on a tailnet or a trusted
-LAN, not something to expose to the internet. For that, put Caddy in front for
-TLS and real auth.
-
-## What the dashboard shows
-
-- **Hero** — watts at the wall right now, cost per hour, cost if it ran all month.
-- **Meters** — GPU power against its 350 W limit, GPU load / memory, CPU power,
-  RAM, disk.
-- **Tiles** — today, month to date, projected month, **idle share** (what you
-  paid to leave it powered on and not training), all time.
-- **Charts** — power draw stacked by component, kWh + cost per hour/day,
-  temperatures. 24 h / 7 d / 30 d. Every chart has a table view and a tooltip;
-  arrow keys move the crosshair.
-- **GPU processes** — what's actually on the card.
+Without a `[meter]`, the wall figure is an **estimate**: the GPU and CPU terms
+are real sensors, but `baseline_w` and `psu_efficiency` are configured
+constants. On a host with no GPU and no readable RAPL, every term is modelled.
 
 ## API
 
@@ -346,16 +413,10 @@ def kwh():
         return json.load(r)["totals"]["all"]["kwh"]
 ```
 
-## Clients
+## Reference
 
-- **Web dashboard** — served by the daemon itself, the full view including history.
-- **`pwr`** — terminal readout on the server.
-- **macOS menu bar app** — [`macos/`](macos/README.md). Wall watts in the menu
-  bar, a panel with meters, totals and GPU processes. Needs `server.host` and
-  `server.token` set (above), or an SSH tunnel. Built from the spec in
-  [`docs/macos-menubar-app.md`](docs/macos-menubar-app.md).
-
-## Storage
+<details>
+<summary><b>Storage, and why history is never rewritten</b></summary>
 
 Two tables in `powermon.db`:
 
@@ -388,7 +449,10 @@ totals period. A silently cheaper month would be worse than a visible hole. A
 machine with no GPU is not a failure: that is a known zero and is billed
 normally.
 
-## Operating
+</details>
+
+<details>
+<summary><b>Operating the service</b></summary>
 
 ```sh
 systemctl --user status powermon
@@ -400,7 +464,10 @@ The sampler catches per-sample failures and keeps running: an `nvidia-smi`
 hiccup records the GPU as unavailable for that sample instead of killing the
 service, and systemd restarts the process if it ever does die.
 
-## Files
+</details>
+
+<details>
+<summary><b>Files in this repository</b></summary>
 
 | File | |
 |---|---|
@@ -413,4 +480,12 @@ service, and systemd restarts the process if it ever does die.
 | `CHANGELOG.md` | what changed per release |
 | `CONTRIBUTING.md` | how to run the tests, and the two constraints to know first |
 | `LICENSE` | MIT |
+| `install.sh` | sets all of this up as a systemd user service |
 | `systemd/powermon.service` | unit, installed to `~/.config/systemd/user/` |
+
+</details>
+
+## License
+
+[MIT](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) for running the tests
+and [CHANGELOG.md](CHANGELOG.md) for what changed.

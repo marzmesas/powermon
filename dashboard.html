@@ -1436,6 +1436,7 @@ function attachCrosshair(svg, geom, S, tt, rows) {
         dots[k].setAttribute("fill-opacity", 1);
       } else {
         dots[k].setAttribute("fill-opacity", 0);
+        dots[k].setAttribute("cx", -99); dots[k].setAttribute("cy", -99);
       }
     });
     if (inRun && rows.some((r) => r.stackTop)) hel("div", "tt-when", tt, "during run " + (inRun.name || "#" + inRun.id)).style.margin = "6px 0 0";
@@ -1452,7 +1453,8 @@ function attachCrosshair(svg, geom, S, tt, rows) {
   const hide = () => {
     tt.classList.remove("show");
     line.setAttribute("x1", -99); line.setAttribute("x2", -99);
-    dots.forEach((d) => d.setAttribute("fill-opacity", 0));
+    // Off the canvas, not just transparent: the dot's outline would stay behind.
+    dots.forEach((d) => { d.setAttribute("fill-opacity", 0); d.setAttribute("cx", -99); d.setAttribute("cy", -99); });
   };
   hit.addEventListener("pointerleave", hide);
   svg.addEventListener("blur", hide);

@@ -46,9 +46,44 @@ gap_max_s = 60.0           # gaps longer than this are not counted as energy (se
 [tariff]
 currency = "EUR"
 symbol = "€"
+# How your contract prices a kWh. Pick the one that matches your bill:
+#   "flat"     one price all day              -> set rate
+#   "tou"      fixed prices by time of day    -> set tou_weekday (and tou_weekend)
+#   "dynamic"  the price follows the market   -> set dynamic_source
+#   "none"     do not track cost
 mode = "flat"
-rate = 0.15                # <-- your price per kWh
-standing_charge_per_day = 0.0   # optional fixed daily fee, added to day/month cost
+rate = 0.15                # <-- your price per kWh. In "tou" and "dynamic" it is the
+                           # fallback for moments the schedule or the fetch misses.
+standing_charge_per_day = 0.0   # fixed fee per day (a monthly base fee / 30.4)
+# Taxes added on top of every price in this section. Leave 0 if the prices you
+# typed already include them, as consumer prices do in much of Europe.
+tax_pct = 0
+
+# --- mode = "tou": hour ranges and their price, 24 h clock.
+# tou_weekday = "0-7=0.22, 7-20=0.34, 20-24=0.28"
+# tou_weekend = "0-24=0.22"            # omit to use the weekday schedule every day
+# tou_holidays = "2026-12-25, 2027-01-01"   # dates billed on the weekend schedule
+
+# --- mode = "dynamic": where the changing price comes from.
+#   "energy-charts"  day-ahead spot price for a European bidding zone, from
+#                    Fraunhofer ISE. Set dynamic_zone: DE-LU, AT, FR, NL, BE, CH,
+#                    PL, DK1, SE3, NO2, IT-North, ... (the zone list is on
+#                    energy-charts.info). No account needed.
+#   "pvpc"           Spain's regulated consumer price, from the grid operator.
+#   "http"           the current price from any JSON endpoint. This is the one
+#                    that works everywhere: a Home Assistant sensor from your
+#                    supplier's integration (Tibber, Octopus, Amber, ...), a
+#                    supplier API, or a script of your own.
+# dynamic_source = "energy-charts"
+# dynamic_zone = "DE-LU"
+# What your contract adds per kWh on top of the market price, before tax: grid
+# fees, levies, the supplier's margin. Your contract or bill lists them.
+# dynamic_surcharge = 0.0
+# dynamic_scale = 1.0        # multiply the source by this: 0.01 if it reports cents
+# For "http" -- same idea as the [meter] settings below:
+# dynamic_url = "http://homeassistant.local:8123/api/states/sensor.electricity_price"
+# dynamic_json_path = "state"
+# dynamic_headers = "Authorization: Bearer <token>"
 
 [power]
 psu_efficiency = 0.90      # 80+ Gold at partial load ~0.89-0.92; wall = dc_power / efficiency

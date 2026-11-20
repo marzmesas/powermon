@@ -20,6 +20,7 @@ directly and the model above only attributes that total between components.
 
 from __future__ import annotations
 
+import bisect
 import ctypes
 import hashlib
 import hmac
@@ -51,7 +52,11 @@ DEFAULTS = {
                "keys_file": "", "tls_cert": "", "tls_key": ""},
     "sampling": {"interval": 2.0, "raw_retention_days": 7, "gap_max_s": 60.0},
     "tariff": {"currency": "EUR", "symbol": "EUR", "mode": "flat",
-               "rate": 0.15, "standing_charge_per_day": 0.0},
+               "rate": 0.15, "standing_charge_per_day": 0.0, "tax_pct": 0.0,
+               "tou_weekday": "", "tou_weekend": "", "tou_holidays": "",
+               "dynamic_source": "", "dynamic_zone": "", "dynamic_scale": 1.0,
+               "dynamic_surcharge": 0.0, "dynamic_url": "", "dynamic_json_path": "",
+               "dynamic_headers": ""},
     "power": {"psu_efficiency": 0.90, "baseline_w": 35.0},
     "cpu": {"rapl_scale": 1.0, "idle_w": 30.0, "max_w": 142.0, "curve_exp": 1.25},
     "gpu": {"enabled": True},
@@ -1171,6 +1176,176 @@ class Store:
             return self.db.execute(sql, args).fetchall()
 
 
+# --------------------------------------------------------------------------- tariff
+
+
+def _parse_schedule(text: object) -> list[tuple[float, float, float]]:
+    """'0-8=0.09, 8-10=0.14' -> [(0, 8, 0.09), (8, 10, 0.14)]."""
+    out = []
+    for part in str(text or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            hours, price = part.split("=")
+            start, end = (float(h) for h in hours.split("-"))
+            entry = (start, end, float(price))
+        except ValueError:
+            raise ValueError(f"bad tariff schedule entry {part!r}; expected e.g. 10-14=0.20") from None
+        if not 0 <= start < end <= 24:
+            raise ValueError(f"tariff schedule hours out of range in {part!r}")
+        out.append(entry)
+    return out
+
+
+class Tariff:
+    """What a kWh costs at a given moment.
+
+    mode = "flat"     one price, `rate`.
+    mode = "tou"      fixed prices by time of day, from `tou_weekday` / `tou_weekend`.
+    mode = "dynamic"  a price that follows the market, read from `dynamic_source`:
+        "energy-charts"  day-ahead spot price for a European bidding zone
+        "pvpc"           Spain's regulated consumer price
+        "http"           the current price from any JSON endpoint: Home
+                         Assistant, a supplier's API, your own script
+    mode = "none"     no cost tracking.
+
+    A dynamic price is (source * dynamic_scale + dynamic_surcharge): the
+    surcharge is whatever your contract adds per kWh on top of the market --
+    grid fees, levies, the supplier's margin.
+
+    `tax_pct` is added to every price here, standing charge included. Hours a
+    schedule does not cover, and moments a dynamic price could not be fetched
+    for, are billed at `rate`, so that is worth keeping realistic in every mode.
+    """
+    MODES = ("none", "flat", "tou", "dynamic")
+    SOURCES = ("energy-charts", "pvpc", "http")
+    ENERGY_CHARTS_URL = "https://api.energy-charts.info/price?bzn={zone}&start={day}&end={day}"
+    PVPC_URL = ("https://apidatos.ree.es/es/datos/mercados/precios-mercados-tiempo-real"
+                "?start_date={day}T00:00&end_date={day}T23:59&time_trunc=hour")
+
+    def __init__(self, cfg: dict, fetch=None):
+        t = cfg["tariff"]
+        self.mode = str(t["mode"]).lower()
+        if self.mode not in self.MODES:
+            raise ValueError(f"tariff.mode must be one of {', '.join(self.MODES)}; got {t['mode']!r}")
+        self._tax = 1.0 + float(t.get("tax_pct", 0.0) or 0.0) / 100.0
+        self._rate = float(t["rate"])
+        self._weekday = _parse_schedule(t.get("tou_weekday"))
+        self._weekend = _parse_schedule(t.get("tou_weekend")) or self._weekday
+        self._holidays = {d.strip() for d in str(t.get("tou_holidays") or "").split(",") if d.strip()}
+        if self.mode == "tou" and not self._weekday:
+            raise ValueError('tariff.mode = "tou" needs tou_weekday, e.g. "0-8=0.09, 8-24=0.16"')
+        self.standing = float(t.get("standing_charge_per_day", 0.0) or 0.0) * self._tax
+
+        self._scale = float(t.get("dynamic_scale", 1.0) or 1.0)
+        self._surcharge = float(t.get("dynamic_surcharge", 0.0) or 0.0)
+        self._fetch = fetch
+        self._poll = 0.0        # seconds between refreshes of a source that only knows "now"
+        self._points: list[tuple[float, float]] = []    # (valid from, price per kWh), sorted
+        self._valid_s = 3600.0  # how long one point holds; the series' own step once known
+        self._tried = 0.0
+        self._source = str(t.get("dynamic_source") or "").strip().lower()
+        if self.mode == "dynamic":
+            self._configure_source(t)
+        # The source's name once one of its prices is in use, "fallback" while `rate` stands in.
+        self.source = self.mode
+
+    def _configure_source(self, t: dict) -> None:
+        if self._source not in self.SOURCES:
+            raise ValueError('tariff.mode = "dynamic" needs dynamic_source: one of '
+                             + ", ".join(self.SOURCES))
+        if self._source == "energy-charts":
+            zone = str(t.get("dynamic_zone") or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9-]+", zone):
+                raise ValueError('dynamic_source = "energy-charts" needs dynamic_zone, e.g. "DE-LU"')
+            self._fetch = self._fetch or (lambda ts: self._fetch_energy_charts(zone, ts))
+        elif self._source == "pvpc":
+            self._fetch = self._fetch or self._fetch_pvpc
+        else:
+            url = str(t.get("dynamic_url") or "").strip()
+            if not url.startswith(("http://", "https://")):
+                raise ValueError('dynamic_source = "http" needs dynamic_url')
+            reader = HttpMeter(url, str(t.get("dynamic_json_path") or ""),
+                               str(t.get("dynamic_headers") or ""), timeout=10.0)
+            self._fetch = self._fetch or (lambda ts: self._fetch_http(reader, ts))
+            self._poll = 300.0
+
+    @property
+    def flat_rate(self) -> float:
+        """`rate` with tax: the whole tariff in flat mode, the fallback otherwise."""
+        return 0.0 if self.mode == "none" else self._rate * self._tax
+
+    def rate_at(self, ts: float) -> float:
+        if self.mode == "tou":
+            when = datetime.fromtimestamp(ts)
+            off = when.weekday() >= 5 or when.strftime("%Y-%m-%d") in self._holidays
+            hour = when.hour + when.minute / 60.0
+            for start, end, price in (self._weekend if off else self._weekday):
+                if start <= hour < end:
+                    return price * self._tax
+        elif self.mode == "dynamic":
+            points = self._points
+            i = bisect.bisect_right(points, (ts, float("inf"))) - 1
+            known = i >= 0 and ts - points[i][0] < self._valid_s
+            # A miss retries every 10 minutes; a "now"-only source is re-read on its own clock.
+            # ponytail: a day-ahead source is fetched on the first miss, so the
+            # first samples after midnight bill at `rate`. Prefetch tomorrow if that matters.
+            if (not known or self._poll) and ts - self._tried >= (self._poll if known else 600.0):
+                self._tried = ts
+                threading.Thread(target=self.load, args=(ts,), daemon=True).start()
+            if known:
+                self.source = self._source
+                return (points[i][1] * self._scale + self._surcharge) * self._tax
+            self.source = "fallback"
+        return self.flat_rate
+
+    def load(self, ts: float) -> None:
+        """Fetch the prices covering `ts`. Runs off the sampler thread."""
+        try:
+            fresh = self._fetch(ts)
+        except Exception as exc:
+            print(f"powermon: tariff fetch failed: {exc!r}", file=sys.stderr, flush=True)
+            return
+        if not fresh:
+            return
+        starts = sorted(fresh)
+        if len(starts) > 1:
+            self._valid_s = min(b - a for a, b in zip(starts, starts[1:]))
+        merged = {**dict(self._points), **fresh}
+        recent = max(merged) - 2 * 86400
+        self._points = sorted((start, price) for start, price in merged.items() if start >= recent)
+
+    @staticmethod
+    def _get_json(url: str) -> dict:
+        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.load(response)
+
+    def _fetch_energy_charts(self, zone: str, ts: float) -> dict[float, float]:
+        """Fraunhofer ISE's energy-charts.info: day-ahead prices, EUR/MWh."""
+        day = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+        payload = self._get_json(self.ENERGY_CHARTS_URL.format(zone=zone, day=day))
+        return {float(start): price / 1000.0
+                for start, price in zip(payload["unix_seconds"], payload["price"])
+                if price is not None}
+
+    def _fetch_pvpc(self, ts: float) -> dict[float, float]:
+        """Red Electrica: PVPC in EUR/MWh, tolls and charges included, taxes not."""
+        day = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+        payload = self._get_json(self.PVPC_URL.format(day=day))
+        series = next(i for i in payload["included"] if i["id"] == "1001")   # 1001 = PVPC
+        return {datetime.fromisoformat(v["datetime"]).timestamp(): v["value"] / 1000.0
+                for v in series["attributes"]["values"]}
+
+    @staticmethod
+    def _fetch_http(reader: "HttpMeter", ts: float) -> dict[float, float]:
+        price = reader.read()
+        if price is None:
+            raise OSError("no number at dynamic_url / dynamic_json_path")
+        return {ts: price}
+
+
 # --------------------------------------------------------------------------- alerts
 
 
@@ -1264,6 +1439,7 @@ class Monitor:
         self.gpu = GpuReader(cfg)
         self.meter = MeterPoller(build_meter(cfg))
         self.alert = IdleAlert(cfg)
+        self.tariff = Tariff(cfg)
         self.net = NetReader()
         self.latest: dict = {}
         self.recent: list[dict] = []       # in-memory ring for sparklines
@@ -1276,7 +1452,7 @@ class Monitor:
 
     @property
     def rate(self) -> float:
-        return float(self.cfg["tariff"]["rate"]) if self.cfg["tariff"]["mode"] != "none" else 0.0
+        return self.tariff.rate_at(time.time())
 
     def sample_once(self) -> dict:
         now = time.time()
@@ -1325,7 +1501,7 @@ class Monitor:
 
         # Stamp today with the standing charge now in effect. Once per day, or
         # again if the tariff is edited while the day is still open.
-        standing = float(self.cfg["tariff"].get("standing_charge_per_day", 0.0) or 0.0)
+        standing = self.tariff.standing
         day = _day_start(datetime.fromtimestamp(now))
         if self._noted_day != (day, standing):
             self.store.note_day(day, standing)
@@ -1335,8 +1511,10 @@ class Monitor:
         gap_max = float(self.cfg["sampling"]["gap_max_s"])
         if self._prev_ts is not None and 0 < now - self._prev_ts <= gap_max:
             watts = {"total": total_w, "cpu": cpu_w, "gpu": gpu_w, "other": other_w}
-            self.store.add_energy(self._prev_ts, now, watts, busy, self.rate,
-                                  complete=gpu_known)
+            # Priced at the start of the interval: a sample is seconds long, so
+            # at most that much energy lands on the wrong side of a price change.
+            self.store.add_energy(self._prev_ts, now, watts, busy,
+                                  self.tariff.rate_at(self._prev_ts), complete=gpu_known)
             if gpu_known:
                 self.session_wh += total_w * (now - self._prev_ts) / 3600.0
         self._prev_ts = now
@@ -1465,10 +1643,14 @@ def totals(store: Store, cfg: dict, now: datetime | None = None) -> dict:
     # 30-day month. Deliberately not scaled by elapsed calendar days -- in a month
     # where recording started on the 28th that would divide by ~28 and read near zero.
     recorded_h = out["month"]["hours"]
-    rate = float(cfg["tariff"]["rate"]) if cfg["tariff"]["mode"] != "none" else 0.0
     # The projection looks forward, so it uses the tariff in effect now rather
-    # than the recorded history.
-    standing_now = float(cfg["tariff"].get("standing_charge_per_day", 0.0) or 0.0)
+    # than the recorded history. A price that moves through the day has no
+    # single "now", so there the month's own average price per kWh stands in.
+    tariff = Tariff(cfg)
+    rate = tariff.flat_rate
+    if tariff.mode in ("tou", "dynamic") and out["month"]["kwh"] > 0:
+        rate = out["month"]["energy_cost"] / out["month"]["kwh"]
+    standing_now = tariff.standing
     if recorded_h > 0.01:
         avg_kw = out["month"]["kwh"] / recorded_h
         projected_kwh = avg_kw * 24.0 * 30.0
@@ -1579,6 +1761,10 @@ def health(monitor: Monitor, period_totals: dict, cfg: dict,
         issues.append({"level": "warn", "code": "meter_unreadable",
                        "message": "The wall meter is configured but not responding; "
                                   "power is modelled instead."})
+    if monitor.tariff.source == "fallback":
+        issues.append({"level": "warn", "code": "tariff_fallback",
+                       "message": "The dynamic price could not be fetched; energy is being "
+                                  "billed at the fallback tariff.rate."})
     if monitor.cpu.source != "rapl":
         issues.append({"level": "info", "code": "cpu_estimated",
                        "message": "CPU power is modelled from utilisation, not measured "
@@ -1651,11 +1837,14 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
         "spark": spark,
         "meta": {"symbol": tariff["symbol"], "currency": tariff["currency"],
                  "rate": rate, "mode": tariff["mode"],
+                 # "fallback" while an hourly price could not be fetched.
+                 "rate_source": monitor.tariff.source,
+                 "tax_pct": float(tariff.get("tax_pct", 0.0) or 0.0),
                  "baseline_w": float(cfg["power"]["baseline_w"]),
                  "psu_efficiency": float(cfg["power"]["psu_efficiency"]),
                  "interval": float(cfg["sampling"]["interval"]),
                  "host": socket.gethostname(), "uptime_s": uptime_s(),
-                 "standing_charge_per_day": float(tariff.get("standing_charge_per_day", 0.0) or 0.0),
+                 "standing_charge_per_day": monitor.tariff.standing,
                  # So a client can tell what it is talking to before relying on
                  # a field that may not exist in an older daemon.
                  "version": __version__},
@@ -1903,6 +2092,10 @@ def main() -> int:
 
     # Before anything is opened, sampled or bound.
     fatal = validate_server_config(cfg, cfg_path)
+    try:
+        Tariff(cfg)
+    except ValueError as exc:
+        fatal = fatal or str(exc)
     if fatal:
         print(f"powermon: {fatal}", file=sys.stderr, flush=True)
         return 2

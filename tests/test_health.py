@@ -40,7 +40,8 @@ class FakeMeter:
 
 class FakeMonitor:
     def __init__(self, age=1.0, gpu_error=False, cpu_source="rapl", count=1,
-                 gpu_enabled=True, meter=False, wall_source="model"):
+                 gpu_enabled=True, meter=False, wall_source="model", tariff_source="flat"):
+        self.tariff = type("FakeTariff", (), {"source": tariff_source})()
         self.latest = {"ts": time.time() - age,
                        "gpu": {"error": gpu_error, "count": count},
                        "wall_source": wall_source}
@@ -144,6 +145,12 @@ class HealthTests(unittest.TestCase):
 
         self.assertNotIn("meter_unreadable", codes(result))
         self.assertEqual(result["wall_source"], "meter")
+
+    def test_billing_at_the_fallback_rate_is_reported(self):
+        result = health(FakeMonitor(tariff_source="fallback"), totals(), CFG)
+        self.assertIn("tariff_fallback", codes(result))
+        self.assertTrue(result["ok"], "a fallback price is still a price")
+        self.assertNotIn("tariff_fallback", codes(health(FakeMonitor(), totals(), CFG)))
 
     def test_no_meter_configured_is_not_a_complaint(self):
         result = health(FakeMonitor(meter=False), totals(), CFG)

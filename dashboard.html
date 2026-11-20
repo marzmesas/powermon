@@ -499,7 +499,9 @@ function renderLive(d) {
   $("cpu-src").textContent = d.power.source === "rapl"
     ? "CPU power: measured (RAPL)" : "CPU power: estimated from load";
   $("tariff-pill").textContent = d.meta.mode === "none"
-    ? "no tariff set" : `${SYM}${d.meta.rate} / kWh`;
+    ? "no tariff set"
+    : `${SYM}${+d.meta.rate.toFixed(4)} / kWh`
+      + ({ tou: " · time of day", dynamic: " · live price" }[d.meta.mode] || "");
 
   $("hero-w").textContent = fmt.w(d.power.total_w);
   $("rate-now").textContent = SYM + fmt.money3(d.power.cost_per_h) + "/h";

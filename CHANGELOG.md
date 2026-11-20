@@ -6,6 +6,12 @@ still change shape between minor versions.
 
 ## Unreleased
 
+- **Time-of-day and dynamic tariffs.** `tariff.mode` gains `tou` (fixed prices
+  by hour range, with a weekend schedule and holidays) and `dynamic` (a market
+  price from energy-charts.info for European zones, Spain's PVPC, or any JSON
+  endpoint), next to `flat`. `tariff.tax_pct` adds taxes to every price.
+  `/api/now` gains `meta.rate_source` and `meta.tax_pct`; the 30-day projection
+  uses the month's average price when the price varies through the day.
 - **Idle-draw alerts.** A new `[alerts]` section pushes to an ntfy topic when the
   machine stays above `idle_w` with the GPU idle, reminds once if it persists,
   and reports when it clears. `/api/now` gains `alert.active` and `alert.since`.

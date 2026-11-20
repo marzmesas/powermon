@@ -6,6 +6,8 @@ still change shape between minor versions.
 
 ## Unreleased
 
+- **Installer.** `install.sh` sets up the config, an access token, the systemd
+  user service and `pwr` in one command, and prints the URL to connect to.
 - **Time-of-day and dynamic tariffs.** `tariff.mode` gains `tou` (fixed prices
   by hour range, with a weekend schedule and holidays) and `dynamic` (a market
   price from energy-charts.info for European zones, Spain's PVPC, or any JSON

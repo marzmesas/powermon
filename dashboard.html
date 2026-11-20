@@ -301,6 +301,7 @@
   <button data-range="7d" aria-pressed="false">7 days</button>
   <button data-range="30d" aria-pressed="false">30 days</button>
   <button data-range="90d" aria-pressed="false">90 days</button>
+  <a class="label" id="hist-csv" href="api/history?range=24h&amp;format=csv">CSV</a>
   <span class="spacer"></span>
   <span class="chart-note" id="hist-note"></span>
 </div>
@@ -1066,6 +1067,7 @@ function renderRuns(runs) {
 document.querySelectorAll(".filters button[data-range]").forEach((b) => {
   b.addEventListener("click", () => {
     RANGE = b.dataset.range;
+    document.getElementById("hist-csv").href = "api/history?range=" + RANGE + "&format=csv";
     document.querySelectorAll(".filters button[data-range]").forEach((o) =>
       o.setAttribute("aria-pressed", String(o === b)));
     tickHistory();

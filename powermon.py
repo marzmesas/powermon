@@ -1599,6 +1599,79 @@ def runs_csv(runs: list[dict]) -> str:
     return out.getvalue()
 
 
+HISTORY_COLUMNS = ("total", "gpu", "cpu", "other", "kwh", "cost", "gpu_temp", "cpu_temp", "busy_frac")
+
+
+def history_csv(series: dict) -> str:
+    """One row per bucket. A None is an empty cell: an unknown, not a zero."""
+    cols = [k for k in HISTORY_COLUMNS if isinstance(series.get(k), list)]
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["time"] + cols)
+    for i, t in enumerate(series.get("t", [])):
+        w.writerow([datetime.fromtimestamp(t).isoformat(timespec="seconds")]
+                   + ["" if series[k][i] is None else series[k][i] for k in cols])
+    return out.getvalue()
+
+
+def _prom_escape(value) -> str:
+    # The exposition format's three specials in label values.
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def prometheus_text(payload: dict) -> str:
+    """Exposition format for the numbers in /api/now.
+
+    A None is left out, never written as 0: Prometheus would store it as a
+    measured zero, which is the claim the JSON API avoids making.
+    """
+    power, cpu, gpu, meta = payload["power"], payload["cpu"], payload["gpu"], payload["meta"]
+    mem, disk = payload.get("mem") or {}, payload.get("disk") or {}
+    alltime = payload["totals"]["all"]
+    metrics = [
+        ("powermon_power_watts", "gauge", "Power draw in watts, by component.",
+         [({"component": "total"}, power["total_w"]), ({"component": "cpu"}, power["cpu_w"]),
+          ({"component": "gpu"}, power["gpu_w"]), ({"component": "other"}, power["other_w"])]),
+        ("powermon_cost_per_hour", "gauge", "Cost of the current draw per hour.",
+         [({}, power["cost_per_h"])]),
+        ("powermon_energy_kwh_total", "counter", "Energy recorded in total, in kWh.",
+         [({}, alltime["kwh"])]),
+        ("powermon_cost_total", "counter", "Cost recorded in total.",
+         [({}, alltime["cost"])]),
+        ("powermon_energy_idle_kwh_total", "counter", "Energy recorded while idle, in kWh.",
+         [({}, alltime["idle_kwh"])]),
+        ("powermon_busy", "gauge", "1 while the machine is busy, 0 while idle.",
+         [({}, int(payload["busy"]))]),
+        ("powermon_alert_active", "gauge", "1 while the idle-draw alert is active.",
+         [({}, int(payload["alert"]["active"]))]),
+        ("powermon_cpu_utilization_percent", "gauge", "CPU utilisation.", [({}, cpu["pct"])]),
+        ("powermon_cpu_temperature_celsius", "gauge", "CPU temperature.", [({}, cpu["temp"])]),
+        ("powermon_gpu_utilization_percent", "gauge", "GPU utilisation, host total.",
+         [({}, gpu.get("util"))]),
+        ("powermon_gpu_temperature_celsius", "gauge", "GPU temperature.", [({}, gpu.get("temp"))]),
+        ("powermon_gpu_memory_used_mib", "gauge", "GPU memory in use, host total.",
+         [({}, gpu.get("mem_used"))]),
+        ("powermon_memory_used_percent", "gauge", "System memory in use.", [({}, mem.get("pct"))]),
+        ("powermon_disk_used_percent", "gauge", "Disk space in use.", [({}, disk.get("pct"))]),
+        ("powermon_tariff_rate", "gauge", "Price per kWh now.", [({}, meta["rate"])]),
+        ("powermon_last_sample_age_seconds", "gauge", "Seconds since the last sample.",
+         [({}, payload["health"]["last_sample_age_s"])]),
+        ("powermon_info", "gauge", "Build information; always 1.",
+         [({"version": meta["version"], "host": meta["host"]}, 1)]),
+    ]
+    lines = []
+    for name, kind, help_text, samples in metrics:
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} {kind}")
+        for labels, value in samples:
+            if value is None:
+                continue
+            label_str = ",".join(f'{k}="{_prom_escape(v)}"' for k, v in labels.items())
+            head = f"{name}{{{label_str}}}" if labels else name
+            lines.append(f"{head} {float(value)!r}")
+    return "\n".join(lines) + "\n"
+
+
 # --------------------------------------------------------------------------- sampler
 
 
@@ -2148,7 +2221,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             allowed, from_query = self._check_token(route)
             if not allowed:
-                if path.startswith("/api") or path == "/healthz":
+                if path.startswith("/api") or path in ("/healthz", "/metrics"):
                     self._json({"error": "unauthorised: token required"}, 401)
                 else:
                     self._send(401, self.DENIED, "text/html; charset=utf-8")
@@ -2170,10 +2243,17 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/now":
                 self._json(now_payload(self.monitor, self.store, self.cfg))
             elif path == "/api/history":
-                span = (parse_qs(route.query).get("range") or ["24h"])[0]
+                q = parse_qs(route.query)
+                span = (q.get("range") or ["24h"])[0]
                 if span not in ("24h", "7d", "30d", "90d"):
                     span = "24h"
-                self._json({"range": span, "series": history(self.store, self.monitor, span)})
+                series = history(self.store, self.monitor, span)
+                if (q.get("format") or [""])[0] == "csv":
+                    self._send(200, history_csv(series).encode(), "text/csv; charset=utf-8",
+                               extra=[("Content-Disposition",
+                                       f'attachment; filename="powermon-history-{span}.csv"')])
+                else:
+                    self._json({"range": span, "series": series})
             elif path == "/api/runs":
                 q = parse_qs(route.query)
                 try:
@@ -2187,6 +2267,9 @@ class Handler(BaseHTTPRequestHandler):
                                        'attachment; filename="powermon-runs.csv"')])
                 else:
                     self._json({"runs": runs})
+            elif path == "/metrics":
+                self._send(200, prometheus_text(now_payload(self.monitor, self.store, self.cfg)).encode(),
+                           "text/plain; version=0.0.4; charset=utf-8")
             elif path == "/healthz":
                 # Same verdict as /api/now's health block, so a probe and the
                 # dashboard can never disagree about whether this host is well.

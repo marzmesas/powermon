@@ -8,7 +8,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.1"
+    MARKETING_VERSION: "0.2"
     CURRENT_PROJECT_VERSION: "1"
     # No Developer ID on this machine: ad-hoc sign. App Sandbox stays off until
     # there is a real team — a sandboxed app with no team ID fails Keychain

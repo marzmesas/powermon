@@ -4,48 +4,78 @@ Notable changes per release. Dates are the release date; the project follows
 [semantic versioning](https://semver.org), with 0.x meaning the JSON API may
 still change shape between minor versions.
 
-## Unreleased
+## 0.2.0 (not yet tagged)
 
-- **AMD GPUs (untested on hardware).** Cards driven by the `amdgpu` kernel driver are read from sysfs (power, load, VRAM, temperature, fan, clock, power cap) and listed after any NVIDIA cards; `gpu_source` reports `amdgpu`, or e.g. `nvml+amdgpu`. Per-process GPU usage is not available for AMD. Only tested against a fake sysfs tree: no AMD hardware was available to check it. Intel GPUs are still not read.
-- **Several machines in one view.** `[peers] hosts` (`name=http://host:8787|TOKEN, ...`, plus `poll_s` and `timeout`) makes one instance poll its peers' `/api/now`; new `GET /api/peers` and an "All machines" dashboard card list each machine with totals, summing costs only when the currency matches. Not editable from the Settings dialog; `--show-config` redacts it.
-- **CO2 beside cost.** `[carbon] g_per_kwh` (grams of CO2 per kWh, set from the Settings dialog too) adds CO2 to the period tiles, `/api/now` (`power.co2_g_per_h`, `meta.co2_g_per_kwh`, `totals.*.co2_kg`, `run`), `/api/runs` and its CSV, and a `powermon_co2_kg_total` Prometheus counter. Unset or 0, no CO2 figure is reported.
-- **Settings page.** The dashboard's Settings dialog sets the electricity price (with a "work it out from a bill" helper), the alerts and sleep-when-idle, applied live without a restart. Changes are stored in `settings.json` over `config.toml`, which is never rewritten. New `GET`/`POST`/`DELETE /api/settings`: writes need admin scope, a JSON content type, an `X-Powermon-Write` header, a same-origin `Origin` and, without a key, a `Host` naming the machine. Executed commands, fetched URLs and `[server]` stay file-only; `server.settings_writable = false` turns writing off. New `--show-config`.
-- **Sleep when idle (opt-in).** `[suspend] after_idle_min` suspends the machine after that long with an idle GPU, low CPU (`max_cpu_pct`), no open run and no logged-in user (`skip_if_logged_in`); `/api/now` gains `suspend {enabled, in_s}` and the dashboard a countdown banner. `meta.mac` is now populated from the default-route interface.
-- **More alerts.** GPU and CPU temperature (`alerts.gpu_temp_c`, `cpu_temp_c`,
-  `temp_after_min`), disk usage (`disk_pct`) and a monthly cost budget
-  (`month_budget`), plus a generic JSON `alerts.webhook_url` beside ntfy. `/api/now`
-  gains `alerts[]` (every active alert; `alert` is unchanged) and the dashboard
-  shows them as warning banners.
-- **Wake from the Mac app.** `/api/now` `meta.mac` carries the NIC address; the menu bar app remembers it and offers a Wake-on-LAN button while the server is unreachable (same LAN only).
-- **Cost per training run.** Each continuous busy stretch is recorded as a run
-  with its energy, cost, peak and average draw and the busiest GPU process
-  (`activity.run_min_s`, `activity.run_gap_s`). New `/api/runs` (JSON or
-  `?format=csv`), `run` in `/api/now`, a "Training runs" card on the dashboard,
-  and `pwr run -- <command>` to price a single command.
+### Cost and price
 
-- **Exports.** `/api/history` gains `?format=csv`, with a CSV link beside the
-  range buttons on the dashboard. New `GET /metrics` serves the `/api/now`
-  figures in Prometheus text format, with the same token rules as `/api/*`.
-
-- **Installer.** `install.sh` sets up the config, an access token, the systemd
-  user service and `pwr` in one command, and prints the URL to connect to.
 - **Time-of-day and dynamic tariffs.** `tariff.mode` gains `tou` (fixed prices
   by hour range, with a weekend schedule and holidays) and `dynamic` (a market
   price from energy-charts.info for European zones, Spain's PVPC, or any JSON
   endpoint), next to `flat`. `tariff.tax_pct` adds taxes to every price.
-  `/api/now` gains `meta.rate_source` and `meta.tax_pct`; the 30-day projection
-  uses the month's average price when the price varies through the day.
-- **Idle-draw alerts.** A new `[alerts]` section pushes to an ntfy topic when the
-  machine stays above `idle_w` with the GPU idle, reminds once if it persists,
-  and reports when it clears. `/api/now` gains `alert.active` and `alert.since`.
-  Off by default.
-- The menu bar app has a mascot for an icon and shows it in the menu bar, tinted
-  with the connection state, and yellow while an alert is active.
-- The menu bar app posts a macOS notification when the idle-draw alert is raised
-  and another when it clears. A "Notify me about alerts" setting turns it off.
-- **Docker.** A `Dockerfile` and `docker-compose.yml` run powermon in a container.
-  The entrypoint writes a config on first start, with a token from `POWERMON_TOKEN`
-  or a generated one printed to the log; an existing config is never modified.
+- **Cost per training run.** Each busy stretch is recorded as a run with its
+  energy, cost, peak and average draw and the process on the card
+  (`activity.run_min_s`, `activity.run_gap_s`). New `/api/runs` (JSON or
+  `?format=csv`), `run` in `/api/now`, a "Training runs" card on the dashboard,
+  and `pwr run -- <command>` to price one command.
+- **Idle cost.** Totals carry `idle_cost`, and the dashboard leads with what
+  the month cost while the machine was on and not working.
+- **CO2 beside cost.** `[carbon] g_per_kwh` adds CO2 to totals, runs, the live
+  reading and `/metrics`. At 0, the default, nothing is reported.
+- **Fixed:** the since-start cost used the current price for all energy, which
+  was wrong under a time-of-day or dynamic tariff.
+
+### Alerts and power saving
+
+- **Idle-draw alerts.** `[alerts]` pushes to an ntfy topic when the machine
+  stays above `idle_w` with the GPU idle, reminds once, and reports when it
+  clears. The message names the process using the most CPU.
+- **More alerts.** GPU and CPU temperature, disk usage and a monthly budget,
+  plus a generic JSON `alerts.webhook_url` beside ntfy. `/api/now` gains
+  `alerts[]`, and the dashboard shows active alerts as banners.
+- **Sleep when idle (opt-in).** `[suspend] after_idle_min` suspends the machine
+  once the GPU is idle, the CPU is quiet, no run is open and nobody is logged
+  in. A real suspend and wake have not been tested.
+
+### Setup
+
+- **Installer.** `install.sh` sets up the config, an access token, the systemd
+  user service and `pwr` in one command, and prints the URL to connect to.
+- **Settings page.** Price, alerts and the sleep timer can be set from the
+  dashboard and apply without a restart. Changes are stored in `settings.json`,
+  which overrides `config.toml`. New `/api/settings` (GET, POST, DELETE), admin
+  scope, limited to a whitelist of keys. A helper works a rate out from a bill.
+- **Docker.** A `Dockerfile` and `docker-compose.yml`. The entrypoint writes a
+  config on first start with a token from `POWERMON_TOKEN` or a generated one.
+  GPU and RAPL passthrough are documented but untested.
+
+### Integrations
+
+- **Exports.** `/api/history?format=csv`, and `GET /metrics` in Prometheus
+  text format behind the same token rule as the API.
+- **MQTT and Home Assistant (opt-in).** `[mqtt] host` publishes the readings
+  with Home Assistant discovery, using a small built-in MQTT 3.1.1 client.
+  Checked against a Mosquitto 2 broker, not against a Home Assistant instance.
+- **Several machines in one view.** `[peers] hosts` makes one instance poll
+  its peers; new `/api/peers` and an "All machines" card on the dashboard.
+- **AMD GPUs.** Cards driven by `amdgpu` are read from sysfs next to any NVIDIA
+  cards. Tested against a fake sysfs tree only, not on hardware.
+
+### Dashboard
+
+- A 90-day range, meter bars that line up, and no overlapping chart labels.
+- `dev.py` serves the local `dashboard.html` against a running powermon and
+  reloads on save.
+
+### Menu bar app
+
+- A mascot for an icon, shown in the menu bar and tinted by state.
+- A macOS notification when the server raises its idle alert and when it
+  clears, with a setting to turn it off.
+- A Wake button (Wake-on-LAN, same local network only) while the server is
+  unreachable. A real wake has not been tested.
+- The popover shows idle cost for the month, the run in progress and every
+  active alert.
+- The Keychain is read once per launch, not once per poll.
 
 ## 0.1.0 — 2026-09-07
 

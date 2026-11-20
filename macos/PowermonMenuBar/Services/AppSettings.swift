@@ -63,6 +63,17 @@ final class AppSettings: ObservableObject {
         return url
     }
 
+    /// The server's MAC, remembered per host: when it is asleep there is no
+    /// snapshot to read it from.
+    func rememberMac(_ mac: String?, host: String?) {
+        guard let mac, let host else { return }
+        defaults.set(mac, forKey: "mac.\(host)")
+    }
+
+    var knownMac: String? {
+        serverURL?.host.flatMap { defaults.string(forKey: "mac.\($0)") }
+    }
+
     /// Keychain account key: the host the token belongs to.
     var tokenAccount: String { serverURL?.host ?? "default" }
 

@@ -94,6 +94,7 @@ final class Poller: ObservableObject {
     private func apply(_ fresh: Snapshot) {
         let now = Date()
         snapshot = fresh
+        settings.rememberMac(fresh.meta.mac, host: settings.serverURL?.host)
         lastSuccess = now
         consecutiveFailures = 0
 

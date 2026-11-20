@@ -68,6 +68,7 @@ struct PopoverView: View {
         StatusBanner(
             state: poller.state,
             host: settings.serverURL?.host,
+            mac: settings.knownMac,
             onRetry: { poller.refreshNow() },
             onSettings: { showingSettings = true }
         )

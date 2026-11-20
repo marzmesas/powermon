@@ -33,6 +33,15 @@ The app starts with no configuration. Open **Settings** (⌘,) from the panel an
 **Test connection** reports which of the three outcomes you got: connected,
 token rejected, or unreachable.
 
+## Waking a sleeping server
+
+When the server is unreachable and the app has seen its MAC address before
+(newer servers report it in `/api/now`), the panel shows a **Wake** button. It
+broadcasts a Wake-on-LAN packet over UDP three times. This works only when the
+Mac is on the same local network as the server: a broadcast does not cross a VPN
+such as Tailscale. The server also needs Wake-on-LAN enabled in its firmware and
+network settings.
+
 ## State of the build
 
 Milestones from the spec, §13:

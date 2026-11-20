@@ -3,8 +3,12 @@ import SwiftUI
 /// Stale / unreachable / 401 / wedged messaging. Each state names the actual
 /// problem, because each has a different fix.
 struct StatusBanner: View {
+    @State private var woke = false
+
     let state: ConnectionState
     let host: String?
+    /// Remembered MAC of the server, if any: enables Wake while unreachable.
+    var mac: String?
     let onRetry: () -> Void
     let onSettings: () -> Void
 
@@ -29,6 +33,23 @@ struct StatusBanner: View {
                     }
                     .buttonStyle(.link)
                     .font(.system(size: 11))
+                }
+                if case .unreachable = state, let mac {
+                    HStack(spacing: 8) {
+                        Button("Wake") {
+                            woke = true
+                            Task.detached { await WakeOnLAN.send(mac: mac) }
+                        }
+                        .buttonStyle(.link)
+                        if woke {
+                            Text("Wake signal sent. It can take a minute.")
+                                .foregroundStyle(Palette.secondary)
+                        }
+                    }
+                    .font(.system(size: 11))
+                    Text("Works only on the same local network as the server, not over a VPN.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Palette.muted)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

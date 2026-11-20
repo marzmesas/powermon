@@ -100,6 +100,8 @@ struct Snapshot: Codable, Sendable, Equatable {
         /// Server sample period in seconds — polling faster than this only
         /// returns duplicates.
         let interval: Double
+        /// NIC address for Wake-on-LAN. Absent from older servers.
+        let mac: String?
     }
 }
 

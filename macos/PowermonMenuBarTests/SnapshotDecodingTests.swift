@@ -100,4 +100,20 @@ final class SnapshotDecodingTests: XCTestCase {
     func testUnmodelledFieldsAreIgnored() throws {
         XCTAssertNoThrow(try decode("sample-now"))
     }
+
+    func testMacAbsentIsNil() throws {
+        XCTAssertNil(try decode("sample-now").meta.mac)
+    }
+
+    func testMacDecodesWhenPresent() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "sample-now", withExtension: "json"))
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        var meta = try XCTUnwrap(json["meta"] as? [String: Any])
+        meta["mac"] = "aa:bb:cc:dd:ee:ff"
+        json["meta"] = meta
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let s = try decoder.decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(s.meta.mac, "aa:bb:cc:dd:ee:ff")
+    }
 }

@@ -5,6 +5,7 @@
   pwr -w         live, refreshes every 2s (Ctrl-C to quit)
   pwr --json     raw JSON from the API
   pwr --url URL  point at a different host (default: from config.toml)
+  pwr run -- CMD run CMD, then print what its duration cost
 
 Reaching a remote instance needs the server's token, from POWERMON_TOKEN or
 --token. Loopback needs none.
@@ -15,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -129,6 +131,36 @@ def render(d: dict, color: bool = True) -> str:
     return "\n".join(lines)
 
 
+def run_command(args) -> int:
+    """Run a command and price its wall-clock window from the all-time totals."""
+    def snapshot():
+        try:
+            d = fetch(args.url, args.token)
+            return d["totals"]["all"]["kwh"], d["totals"]["all"]["cost"], d["meta"]["symbol"]
+        except (OSError, ValueError, KeyError):
+            return None
+
+    before, t0 = snapshot(), time.time()
+    try:
+        code = subprocess.call(args.command)
+    except OSError as exc:
+        print(f"pwr: cannot run {args.command[0]}: {exc}", file=sys.stderr)
+        return 127
+    except KeyboardInterrupt:
+        code = 130
+    secs = time.time() - t0
+    after = snapshot() if before else None
+    h, m, s = int(secs // 3600), int(secs % 3600 // 60), secs % 60
+    took = f"{h}h {m}m {s:.0f}s" if h else (f"{m}m {s:.0f}s" if m else f"{s:.1f}s")
+    if before and after:
+        print(f"pwr: {took}, {after[0] - before[0]:.3f} kWh, "
+              f"{before[2]}{after[1] - before[1]:.3f}", file=sys.stderr)
+    else:
+        print(f"pwr: {took}; cost could not be measured (powermon unreachable)",
+              file=sys.stderr)
+    return code
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="terminal readout of the powermon service")
     ap.add_argument("-w", "--watch", action="store_true", help="refresh until interrupted")
@@ -137,7 +169,16 @@ def main() -> int:
     ap.add_argument("--url", default=default_url(), help="powermon base URL")
     ap.add_argument("--token", default=os.environ.get("POWERMON_TOKEN"),
                     help="access token for a remote instance (or POWERMON_TOKEN)")
+    ap.add_argument("command", nargs=argparse.REMAINDER,
+                    help="'run -- CMD...': run CMD and report its energy and cost")
     args = ap.parse_args()
+    if args.command and args.command[0] == "run":
+        args.command = [a for i, a in enumerate(args.command[1:]) if i or a != "--"]
+        if not args.command:
+            ap.error("run needs a command, e.g.  pwr run -- python train.py")
+        return run_command(args)
+    if args.command:
+        ap.error(f"unrecognised arguments: {' '.join(args.command)}")
 
     color = sys.stdout.isatty()
     try:

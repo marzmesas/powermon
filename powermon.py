@@ -21,9 +21,11 @@ directly and the model above only attributes that total between components.
 from __future__ import annotations
 
 import bisect
+import csv
 import ctypes
 import hashlib
 import hmac
+import io
 import ipaddress
 import secrets
 import ssl
@@ -64,7 +66,8 @@ DEFAULTS = {
               "http_url": "", "http_json_path": "", "http_headers": "", "http_scale": 1.0,
               "nut_host": "127.0.0.1", "nut_port": 3493, "nut_ups": "ups",
               "nut_var": "ups.realpower"},
-    "activity": {"busy_gpu_util": 15.0, "busy_gpu_power_w": 80.0},
+    "activity": {"busy_gpu_util": 15.0, "busy_gpu_power_w": 80.0,
+                 "run_min_s": 60.0, "run_gap_s": 120.0},
     # idle_w = 0 turns alerting off: a sensible threshold depends on the box.
     "alerts": {"idle_w": 0.0, "after_min": 10.0, "remind_min": 60.0, "ntfy_url": ""},
 }
@@ -1080,6 +1083,15 @@ CREATE TABLE IF NOT EXISTS days (
   day INTEGER PRIMARY KEY,
   standing REAL NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS runs (
+  -- A continuous busy stretch. end_ts is NULL while it is open. secs_known is
+  -- the time actually integrated, so avg_w is not diluted by unreadable
+  -- intervals; peak_w stays NULL if none was readable.
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  start_ts REAL NOT NULL, end_ts REAL, updated_ts REAL NOT NULL,
+  wh REAL NOT NULL DEFAULT 0, cost REAL NOT NULL DEFAULT 0, peak_w REAL,
+  secs_known REAL NOT NULL DEFAULT 0, name TEXT
+);
 CREATE INDEX IF NOT EXISTS samples_ts ON samples (ts);
 """
 
@@ -1152,6 +1164,12 @@ class Store:
                      0.0 if complete else dt))
                 t0 = seg_end
             self.db.commit()
+
+    def execute(self, sql: str, args: tuple = ()) -> int:
+        with self.lock:
+            cur = self.db.execute(sql, args)
+            self.db.commit()
+            return cur.lastrowid
 
     def note_day(self, day_start: float, standing: float) -> None:
         """Record the standing charge in effect for a day being sampled.
@@ -1465,6 +1483,122 @@ class IdleAlert:
             self._send(self.url, f"powermon: {title}", body.strip(), priority, tags)
 
 
+class RunTracker:
+    """Turns the busy/idle stream into training runs, one row each.
+
+    A run opens once busy has held for `run_min_s` (so a blip is not a run) and
+    closes once idle has held for `run_gap_s` (so a pause between epochs does
+    not split it). It ends when the GPU went idle, not when the gap expired,
+    and energy spent in the closing gap is not charged to it.
+    """
+    FLUSH_S = 30.0   # how often the open row is rewritten
+
+    def __init__(self, cfg: dict, store: Store):
+        act = cfg["activity"]
+        self.min_s = float(act["run_min_s"])
+        self.gap_s = float(act["run_gap_s"])
+        self.store = store
+        # A crash or restart leaves a row open; its last update is the last
+        # moment we know the run was alive.
+        store.execute("UPDATE runs SET end_ts=updated_ts WHERE end_ts IS NULL")
+        self._prev: float | None = None
+        self._run: dict | None = None
+        self._id: int | None = None
+        self._flushed = 0.0
+
+    def observe(self, now: float, busy: bool, wh: float | None, cost: float | None,
+                total_w: float | None, procs: list) -> None:
+        """Feed one sample. wh/cost are for the interval ending now, None when
+        there was no usable interval (first sample, downtime, unreadable GPU)."""
+        prev, self._prev = self._prev, now
+        if prev is None:
+            wh = cost = None
+        r = self._run
+        if not busy:
+            if r is None:
+                return
+            if self._id is None:                 # never held long enough: a blip
+                self._run = None
+                return
+            if wh is not None:
+                r["gap"][0] += wh; r["gap"][1] += cost; r["gap"][2] += now - prev
+            if now - r["last_busy"] >= self.gap_s:
+                self._write(r["last_busy"])
+                self._run = self._id = None
+            return
+        if r is None:
+            r = self._run = {"start": prev if prev is not None else now, "wh": 0.0,
+                             "cost": 0.0, "peak": None, "secs": 0.0,
+                             "gap": [0.0, 0.0, 0.0], "names": {}}
+        # Busy again: the pause was part of the run after all.
+        r["wh"] += r["gap"][0]; r["cost"] += r["gap"][1]; r["secs"] += r["gap"][2]
+        r["gap"] = [0.0, 0.0, 0.0]
+        r["last_busy"] = now
+        if wh is not None:
+            r["wh"] += wh; r["cost"] += cost; r["secs"] += now - prev
+            r["peak"] = total_w if r["peak"] is None else max(r["peak"], total_w)
+        for name in {p.get("name") for p in procs if p.get("name")}:
+            r["names"][name] = r["names"].get(name, 0) + 1
+        if self._id is None:
+            if now - r["start"] >= self.min_s:
+                self._id = self.store.execute(
+                    "INSERT INTO runs (start_ts, updated_ts) VALUES (?,?)", (r["start"], now))
+                self._write(None, now)
+        elif now - self._flushed >= self.FLUSH_S:
+            self._write(None, now)
+
+    def _name(self) -> str | None:
+        names = self._run["names"]
+        return max(names, key=names.get) if names else None   # first seen wins a tie
+
+    def _write(self, end: float | None, now: float | None = None) -> None:
+        r = self._run
+        self._flushed = now if now is not None else end
+        self.store.execute(
+            "UPDATE runs SET end_ts=?, updated_ts=?, wh=?, cost=?, peak_w=?, secs_known=?, name=?"
+            " WHERE id=?", (end, self._flushed, r["wh"], r["cost"], r["peak"], r["secs"],
+                            self._name(), self._id))
+
+    def current(self) -> dict | None:
+        """The open run in the same shape as /api/runs, or None."""
+        r = self._run
+        if r is None or self._id is None:
+            return None
+        return shape_run({"id": self._id, "start_ts": r["start"], "end_ts": None,
+                          "wh": r["wh"], "cost": r["cost"], "peak_w": r["peak"],
+                          "secs_known": r["secs"], "name": self._name()}, time.time())
+
+
+RUN_FIELDS = ["id", "start", "end", "seconds", "kwh", "cost", "peak_w", "avg_w", "name", "running"]
+
+
+def shape_run(row, now: float) -> dict:
+    end = row["end_ts"]
+    known = row["secs_known"]
+    return {"id": row["id"], "start": row["start_ts"], "end": end,
+            "seconds": (end if end is not None else now) - row["start_ts"],
+            "kwh": row["wh"] / 1000.0, "cost": row["cost"], "peak_w": row["peak_w"],
+            # Over the time we could measure, so unreadable intervals do not
+            # drag the average down.
+            "avg_w": row["wh"] * 3600.0 / known if known > 0 else None,
+            "name": row["name"], "running": end is None}
+
+
+def runs_list(store: Store, limit: int = 50, now: float | None = None) -> list[dict]:
+    now = time.time() if now is None else now
+    rows = store.query("SELECT * FROM runs ORDER BY start_ts DESC, id DESC LIMIT ?", (limit,))
+    return [shape_run(r, now) for r in rows]
+
+
+def runs_csv(runs: list[dict]) -> str:
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(RUN_FIELDS)
+    for r in runs:
+        w.writerow(["" if r[k] is None else r[k] for k in RUN_FIELDS])
+    return out.getvalue()
+
+
 # --------------------------------------------------------------------------- sampler
 
 
@@ -1476,6 +1610,7 @@ class Monitor:
         self.gpu = GpuReader(cfg)
         self.meter = MeterPoller(build_meter(cfg))
         self.alert = IdleAlert(cfg)
+        self.runs = RunTracker(cfg, store)
         self.tariff = Tariff(cfg)
         self.net = NetReader()
         self.latest: dict = {}
@@ -1545,6 +1680,7 @@ class Monitor:
             self.store.note_day(day, standing)
             self._noted_day = (day, standing)
 
+        run_wh = run_cost = None   # stays None when the interval adds no energy
         # energy integration, skipping service-downtime gaps
         gap_max = float(self.cfg["sampling"]["gap_max_s"])
         if self._prev_ts is not None and 0 < now - self._prev_ts <= gap_max:
@@ -1559,7 +1695,11 @@ class Monitor:
                 # Summed at each interval's own price: one rate applied to the
                 # whole session is wrong the moment the price moves.
                 self.session_cost += wh / 1000.0 * rate
+                run_wh, run_cost = wh, wh / 1000.0 * rate
         self._prev_ts = now
+
+        self.runs.observe(now, busy, run_wh, run_cost, total_w if gpu_known else None,
+                          gpu.get("procs") or [])
 
         # The live view keeps numbers so the API shape is unchanged; `partial`
         # and the existing gpu.error flag are how a client knows the total is
@@ -1876,6 +2016,7 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
         "mem": latest.get("mem", {}), "disk": latest.get("disk", {}),
         "net": latest.get("net", {}), "busy": bool(latest["busy"]),
         "alert": latest.get("alert") or {"active": False, "since": None},
+        "run": monitor.runs.current(),
         "totals": period_totals,
         "health": health(monitor, period_totals, cfg),
         "session": {"wh": monitor.session_wh, "cost": monitor.session_cost,
@@ -2033,6 +2174,19 @@ class Handler(BaseHTTPRequestHandler):
                 if span not in ("24h", "7d", "30d", "90d"):
                     span = "24h"
                 self._json({"range": span, "series": history(self.store, self.monitor, span)})
+            elif path == "/api/runs":
+                q = parse_qs(route.query)
+                try:
+                    limit = max(1, min(1000, int((q.get("limit") or ["50"])[0])))
+                except ValueError:
+                    limit = 50
+                runs = runs_list(self.store, limit)
+                if (q.get("format") or [""])[0] == "csv":
+                    self._send(200, runs_csv(runs).encode(), "text/csv; charset=utf-8",
+                               extra=[("Content-Disposition",
+                                       'attachment; filename="powermon-runs.csv"')])
+                else:
+                    self._json({"runs": runs})
             elif path == "/healthz":
                 # Same verdict as /api/now's health block, so a probe and the
                 # dashboard can never disagree about whether this host is well.

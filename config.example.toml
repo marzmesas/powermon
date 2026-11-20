@@ -136,6 +136,10 @@ nut_var = "ups.realpower"
 # Lets the dashboard split cost into work vs idle-but-powered-on.
 busy_gpu_util = 15         # percent
 busy_gpu_power_w = 80      # watts
+# Training runs: a run starts once busy has held this long, so a blip is not one...
+run_min_s = 60             # seconds
+# ...and ends once idle has held this long, so a pause between epochs does not split it.
+run_gap_s = 120            # seconds
 
 [alerts]
 # Notifies when the box draws real power while the GPU is idle — a stuck

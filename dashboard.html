@@ -359,6 +359,15 @@
   <div class="table-scroll hidden" id="tbl3"></div>
 </section>
 
+<section class="card" style="margin-top:14px" aria-labelledby="t5">
+  <div class="chart-head">
+    <span class="chart-title" id="t5">Training runs</span>
+    <a class="label" href="api/runs?format=csv">CSV</a>
+  </div>
+  <div id="runs-empty" class="meter-sub">No runs recorded yet.</div>
+  <div class="table-scroll hidden" id="runs"></div>
+</section>
+
 <section class="card" style="margin-top:14px" aria-labelledby="t4">
   <div class="chart-head"><span class="chart-title" id="t4">On the GPU right now</span></div>
   <div id="procs" class="meter-sub">-</div>
@@ -1018,6 +1027,41 @@ async function tickHistory() {
   document.querySelectorAll(".plot").forEach((c) => c.classList.remove("loading"));
 }
 
+async function tickRuns() {
+  try {
+    const r = await fetch("api/runs?limit=50", { cache: "no-store" });
+    if (!r.ok) throw new Error("http");
+    renderRuns((await r.json()).runs);
+  } catch (e) { /* hold previous render; tickNow owns the banner */ }
+}
+
+function renderRuns(runs) {
+  $("runs-empty").classList.toggle("hidden", runs.length > 0);
+  const box = $("runs");
+  box.classList.toggle("hidden", runs.length === 0);
+  box.textContent = "";
+  if (!runs.length) return;
+  const tbl = document.createElement("table");
+  const hr = document.createElement("tr");
+  ["Started", "Duration", "Energy", "Cost", "Average", "Process"].forEach((h) => {
+    const th = document.createElement("th"); th.textContent = h; hr.appendChild(th);
+  });
+  const head = document.createElement("thead"); head.appendChild(hr);
+  const tb = document.createElement("tbody");
+  runs.forEach((r) => {
+    const tr = document.createElement("tr");
+    [fmt.dayTime(r.start) + (r.running ? " (running)" : ""), fmt.dur(r.seconds),
+     fmt.kwh(r.kwh) + " kWh", SYM + fmt.money(r.cost), fmt.w(r.avg_w) + " W",
+     r.name || "-"].forEach((cell) => {
+      const td = document.createElement("td"); td.textContent = cell; tr.appendChild(td);
+    });
+    if (r.running) tr.style.fontWeight = "600";
+    tb.appendChild(tr);
+  });
+  tbl.append(head, tb);
+  box.appendChild(tbl);
+}
+
 /* ---------------------------------------------------------------- controls */
 document.querySelectorAll(".filters button[data-range]").forEach((b) => {
   b.addEventListener("click", () => {
@@ -1062,8 +1106,10 @@ addEventListener("resize", () => {
 
 tickNow();
 tickHistory();
+tickRuns();
 setInterval(tickNow, 2000);
 setInterval(tickHistory, 60000);
+setInterval(tickRuns, 60000);
 </script>
 </body>
 </html>

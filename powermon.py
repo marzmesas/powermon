@@ -69,7 +69,10 @@ DEFAULTS = {
     "activity": {"busy_gpu_util": 15.0, "busy_gpu_power_w": 80.0,
                  "run_min_s": 60.0, "run_gap_s": 120.0},
     # idle_w = 0 turns alerting off: a sensible threshold depends on the box.
-    "alerts": {"idle_w": 0.0, "after_min": 10.0, "remind_min": 60.0, "ntfy_url": ""},
+    # The same goes for every other limit below: 0 = off.
+    "alerts": {"idle_w": 0.0, "after_min": 10.0, "remind_min": 60.0, "ntfy_url": "",
+               "webhook_url": "", "gpu_temp_c": 0.0, "cpu_temp_c": 0.0, "temp_after_min": 5.0,
+               "disk_pct": 0.0, "month_budget": 0.0},
 }
 
 
@@ -1092,6 +1095,10 @@ CREATE TABLE IF NOT EXISTS runs (
   wh REAL NOT NULL DEFAULT 0, cost REAL NOT NULL DEFAULT 0, peak_w REAL,
   secs_known REAL NOT NULL DEFAULT 0, name TEXT
 );
+CREATE TABLE IF NOT EXISTS budget_alert (
+  -- At most one row: the calendar month ("YYYY-MM") the budget alert last fired in.
+  id INTEGER PRIMARY KEY CHECK (id = 1), month TEXT NOT NULL, since REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS samples_ts ON samples (ts);
 """
 
@@ -1187,6 +1194,11 @@ class Store:
     def prune(self, older_than_ts: float) -> None:
         with self.lock:
             self.db.execute("DELETE FROM samples WHERE ts < ?", (older_than_ts,))
+            self.db.commit()
+
+    def set_budget_alert(self, month: str, since: float) -> None:
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO budget_alert VALUES (1, ?, ?)", (month, since))
             self.db.commit()
 
     def query(self, sql: str, args: tuple | dict = ()) -> list[sqlite3.Row]:
@@ -1384,6 +1396,42 @@ def ntfy_send(url: str, title: str, body: str, priority: str, tags: str) -> None
     threading.Thread(target=post, daemon=True).start()
 
 
+def webhook_send(url: str, payload: dict) -> None:
+    """POST one JSON body to a webhook, off the sampler thread; failures are dropped like ntfy's."""
+    def post() -> None:
+        try:
+            request = urllib.request.Request(
+                url, data=json.dumps(payload).encode(), method="POST",
+                headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(request, timeout=5).close()
+        except Exception as exc:
+            print(f"powermon: alert webhook failed: {exc!r}", file=sys.stderr, flush=True)
+    threading.Thread(target=post, daemon=True).start()
+
+
+class Notifier:
+    """The one send path: fans an alert out to every configured channel."""
+
+    def __init__(self, cfg: dict, send=ntfy_send, post=webhook_send):
+        alerts = cfg["alerts"]
+
+        def http(key: str) -> str:
+            url = str(alerts.get(key, "")).strip()
+            # urlopen would happily read file:// too.
+            return url if url.startswith(("http://", "https://")) else ""
+        self.ntfy, self.webhook = http("ntfy_url"), http("webhook_url")
+        self._send, self._post = send, post
+        self.host = socket.gethostname()
+
+    def push(self, kind: str, title: str, body: str, priority: str, tags: str) -> None:
+        title, body = f"powermon: {title}", body.strip()
+        if self.ntfy:
+            self._send(self.ntfy, title, body, priority, tags)
+        if self.webhook:
+            self._post(self.webhook, {"title": title, "message": body, "priority": priority,
+                                      "tags": tags, "host": self.host, "kind": kind})
+
+
 def top_cpu_process(window: float = 0.5, proc: Path = Path("/proc"), sleep=time.sleep) -> str:
     """Name whatever used the most CPU over a short window, for an alert body.
 
@@ -1426,16 +1474,13 @@ class IdleAlert:
     """
     CLEAR_S = 60.0   # below the threshold this long before the episode is over
 
-    def __init__(self, cfg: dict, send=ntfy_send):
+    def __init__(self, cfg: dict, notifier: "Notifier"):
         alerts = cfg["alerts"]
         self.idle_w = float(alerts["idle_w"])
         self.after_s = float(alerts["after_min"]) * 60.0
         self.remind_s = float(alerts["remind_min"]) * 60.0
-        url = str(alerts["ntfy_url"]).strip()
-        # urlopen would happily read file:// too.
-        self.url = url if url.startswith(("http://", "https://")) else ""
-        self._send = send
-        self._host = socket.gethostname()
+        self._notifier = notifier
+        self._host = notifier.host
         self._over_since: float | None = None
         self._under_since: float | None = None
         self._alerted = False
@@ -1478,9 +1523,109 @@ class IdleAlert:
                 self._alerted = self._reminded = False
         return {"active": self._alerted, "since": self._over_since if self._alerted else None}
 
+    def entry(self) -> dict | None:
+        """This alert as one /api/now `alerts` row, or None while quiet."""
+        if not self._alerted:
+            return None
+        return {"kind": "idle", "since": self._over_since,
+                "message": f"Wall draw above {self.idle_w:.0f} W while the GPU is idle"}
+
     def _push(self, title: str, body: str, priority: str, tags: str) -> None:
-        if self.url:
-            self._send(self.url, f"powermon: {title}", body.strip(), priority, tags)
+        self._notifier.push("idle", title, body, priority, tags)
+
+
+class ThresholdAlert:
+    """A value that has stayed above a limit for a while.
+
+    One push when it trips, one when it has been back under for CLEAR_S, nothing
+    between. A None reading (sensor unknown) is neither: it leaves the state and
+    both timers as they were, because unknown is not a cool reading.
+    """
+
+    def __init__(self, kind: str, label: str, unit: str, limit: float, after_s: float,
+                 notifier: "Notifier"):
+        self.kind, self.label, self.unit = kind, label, unit
+        self.limit, self.after_s = float(limit), float(after_s)
+        self._notifier = notifier
+        self._over_since: float | None = None
+        self._under_since: float | None = None
+        self._alerted = False
+
+    def observe(self, now: float, value: float | None) -> bool:
+        if self.limit <= 0 or value is None:
+            return self._alerted
+        host, lim = self._notifier.host, f"{self.limit:g}{self.unit}"
+        if value > self.limit:
+            self._under_since = None
+            if self._over_since is None:
+                self._over_since = now
+            if not self._alerted and now - self._over_since >= self.after_s:
+                self._alerted = True
+                dwell = f" for {(now - self._over_since) / 60.0:.0f} min" if self.after_s else ""
+                self._notifier.push(self.kind, f"{host} {self.label} {value:.0f}{self.unit}",
+                                    f"{self.label} is {value:.0f}{self.unit}, above the {lim} "
+                                    f"limit{dwell}.", "default", "warning")
+        elif self._over_since is not None:
+            if self._under_since is None:
+                self._under_since = now
+            if now - self._under_since >= IdleAlert.CLEAR_S:
+                if self._alerted:
+                    self._notifier.push(self.kind,
+                                        f"{host} {self.label} back to {value:.0f}{self.unit}",
+                                        f"{self.label} is back under {lim}.",
+                                        "low", "white_check_mark")
+                self._over_since = self._under_since = None
+                self._alerted = False
+        return self._alerted
+
+    def entry(self) -> dict | None:
+        if not self._alerted:
+            return None
+        return {"kind": self.kind, "since": self._over_since,
+                "message": f"{self.label} above {self.limit:g}{self.unit}"}
+
+
+class BudgetAlert:
+    """One push per calendar month, the first time its cost so far exceeds the budget.
+
+    The month it fired in is kept in the database, so a restart cannot repeat it.
+    The marker is written before the push: a crash in between loses one
+    notification rather than sending two. totals() runs SQL, hence CHECK_S.
+    """
+    CHECK_S = 300.0
+
+    def __init__(self, budget: float, symbol: str, store: "Store", notifier: "Notifier", cost_of):
+        self.budget, self.symbol = float(budget), symbol
+        self._store, self._notifier, self._cost_of = store, notifier, cost_of
+        self._checked = float("-inf")
+        self._fired: tuple[str, float] | None = None   # (month, when), mirrors the table
+
+    def observe(self, now: float) -> None:
+        if self.budget <= 0 or now - self._checked < self.CHECK_S:
+            return
+        self._checked = now
+        when = datetime.fromtimestamp(now)
+        month = when.strftime("%Y-%m")
+        if self._fired is None:
+            rows = self._store.query("SELECT month, since FROM budget_alert")
+            self._fired = (rows[0]["month"], rows[0]["since"]) if rows else ("", 0.0)
+        if self._fired[0] == month:
+            return
+        cost = self._cost_of(when)
+        if cost <= self.budget:
+            return
+        self._fired = (month, now)
+        self._store.set_budget_alert(month, now)
+        self._notifier.push("budget", f"{self._notifier.host} over its monthly budget",
+                            f"This month's electricity is {self.symbol} {cost:.2f}, past the "
+                            f"{self.symbol} {self.budget:.2f} budget.", "default", "moneybag")
+
+    def entry(self, now: float) -> dict | None:
+        month = datetime.fromtimestamp(now).strftime("%Y-%m")
+        if self._fired is None or self._fired[0] != month:
+            return None
+        return {"kind": "budget", "since": self._fired[1],
+                "message": f"Month cost past the {self.symbol} {self.budget:.2f} budget"}
 
 
 class RunTracker:
@@ -1682,7 +1827,20 @@ class Monitor:
         self.cpu = CpuReader(cfg)
         self.gpu = GpuReader(cfg)
         self.meter = MeterPoller(build_meter(cfg))
-        self.alert = IdleAlert(cfg)
+        notifier = Notifier(cfg)
+        self.alert = IdleAlert(cfg, notifier)
+        a = cfg["alerts"]
+        temp_s = float(a["temp_after_min"]) * 60.0
+        self.thresholds = {
+            "gpu_temp": ThresholdAlert("gpu_temp", "GPU temperature", " °C",
+                                       a["gpu_temp_c"], temp_s, notifier),
+            "cpu_temp": ThresholdAlert("cpu_temp", "CPU temperature", " °C",
+                                       a["cpu_temp_c"], temp_s, notifier),
+            # Disk fill is slow, so no dwell: the first reading over is the alert.
+            "disk": ThresholdAlert("disk", "Disk usage", " %", a["disk_pct"], 0, notifier)}
+        self.budget = BudgetAlert(
+            a["month_budget"], cfg["tariff"]["symbol"], store, notifier,
+            lambda when: totals(store, cfg, when)["month"]["cost"])
         self.runs = RunTracker(cfg, store)
         self.tariff = Tariff(cfg)
         self.net = NetReader()
@@ -1781,13 +1939,21 @@ class Monitor:
         detail["alert"] = self.alert.observe(
             now, total_w if gpu_known else None, busy,
             lambda: f"CPU {util:.0f} %, GPU {row['gpu_util']:.0f} %. {top_cpu_process()}")
+        disk = self._disk()
+        for key, value in (("gpu_temp", gpu.get("temp")), ("cpu_temp", row["cpu_temp"]),
+                           ("disk", disk["pct"])):
+            self.thresholds[key].observe(now, value)
+        self.budget.observe(now)
+        detail["alerts"] = [e for e in (self.alert.entry(),
+                                        *(t.entry() for t in self.thresholds.values()),
+                                        self.budget.entry(now)) if e]
         detail.update({"total_w": total_w, "gpu_w": gpu_w, "other_w": other_w,
                        "partial": not gpu_known,
                        "wall_source": wall_source, "meter_w": meter_w,
                        "modelled_w": modelled_w, "residual_w": residual_w,
                        "gpu": gpu, "mem": mem, "net": self.net.sample(now),
                        "load": loadavg(), "cpu_freq": self.cpu.freq_mhz(),
-                       "disk": self._disk(), "cpu_power_source": self.cpu.source})
+                       "disk": disk, "cpu_power_source": self.cpu.source})
         self.latest = detail
         if gpu_known:
             # No fabricated point: the sparkline shows a shorter series rather
@@ -2089,6 +2255,7 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
         "mem": latest.get("mem", {}), "disk": latest.get("disk", {}),
         "net": latest.get("net", {}), "busy": bool(latest["busy"]),
         "alert": latest.get("alert") or {"active": False, "since": None},
+        "alerts": latest.get("alerts", []),
         "run": monitor.runs.current(),
         "totals": period_totals,
         "health": health(monitor, period_totals, cfg),

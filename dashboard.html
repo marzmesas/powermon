@@ -505,9 +505,15 @@ function renderBanners(issues) {
   const heading = { error: "Problem", warn: "Incomplete", info: "Note" };
   (issues || []).forEach((it) => {
     const div = hel("div", "banner " + it.level, box);
-    hel("b", null, div, heading[it.level] || "Note");
+    hel("b", null, div, it.title || heading[it.level] || "Note");
     hel("span", null, div, it.message);
   });
+}
+
+/* Health issues plus the server's active alerts (warning level, one line each). */
+function bannerItems(d) {
+  return [...((d && d.health && d.health.issues) || []),
+          ...((d && d.alerts) || []).map((a) => ({ level: "warn", title: "Alert", message: a.message }))];
 }
 
 function renderLive(d) {
@@ -624,7 +630,7 @@ function renderLive(d) {
     p.appendChild(tbl);
   }
 
-  renderBanners((d.health || {}).issues);
+  renderBanners(bannerItems(d));
 
   $("model-note").textContent =
     `Wall power = (CPU + GPU + ${fmt.w(d.meta.baseline_w)} W baseline) ÷ `
@@ -1010,7 +1016,7 @@ async function tickNow() {
   } catch (e) {
     transportIssue = describeFailure(e.status);
     // Keep the last render, but say why it is not moving.
-    renderBanners([transportIssue, ...((NOW && NOW.health && NOW.health.issues) || [])]);
+    renderBanners([transportIssue, ...bannerItems(NOW)]);
   }
   const stale = Date.now() - lastOk > 12000;
   $("dot").className = "dot" + (stale ? " stale" : "");

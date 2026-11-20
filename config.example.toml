@@ -152,3 +152,13 @@ remind_min = 60            # urgent reminder after this long; 0 = no reminder
 # knows the topic name can read it, so make it long and random. Empty = no push;
 # the alert still shows in /api/now and turns the menu bar icon yellow.
 ntfy_url = ""
+# A generic webhook: every alert is also POSTed here as JSON,
+# {"title", "message", "priority", "tags", "host", "kind"}. Empty = off.
+webhook_url = ""
+
+# More alerts, each one push when it trips and one when it clears. 0 = off.
+gpu_temp_c = 0             # hottest GPU, degrees C
+cpu_temp_c = 0             # CPU, degrees C
+temp_after_min = 5         # a temperature must stay above its limit this long
+disk_pct = 0               # disk usage percent; alerts immediately
+month_budget = 0           # this month's cost so far, in the tariff currency; once per month

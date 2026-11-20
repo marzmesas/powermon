@@ -480,6 +480,7 @@ service, and systemd restarts the process if it ever does die.
 | `CHANGELOG.md` | what changed per release |
 | `CONTRIBUTING.md` | how to run the tests, and the two constraints to know first |
 | `LICENSE` | MIT |
+| `dev.py` | serves the local `dashboard.html` against a running powermon and reloads on save, for working on the UI |
 | `install.sh` | sets all of this up as a systemd user service |
 | `systemd/powermon.service` | unit, installed to `~/.config/systemd/user/` |
 

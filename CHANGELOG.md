@@ -6,6 +6,7 @@ still change shape between minor versions.
 
 ## Unreleased
 
+- **Settings page.** The dashboard's Settings dialog sets the electricity price (with a "work it out from a bill" helper), the alerts and sleep-when-idle, applied live without a restart. Changes are stored in `settings.json` over `config.toml`, which is never rewritten. New `GET`/`POST`/`DELETE /api/settings`: writes need admin scope, a JSON content type, an `X-Powermon-Write` header, a same-origin `Origin` and, without a key, a `Host` naming the machine. Executed commands, fetched URLs and `[server]` stay file-only; `server.settings_writable = false` turns writing off. New `--show-config`.
 - **Sleep when idle (opt-in).** `[suspend] after_idle_min` suspends the machine after that long with an idle GPU, low CPU (`max_cpu_pct`), no open run and no logged-in user (`skip_if_logged_in`); `/api/now` gains `suspend {enabled, in_s}` and the dashboard a countdown banner. `meta.mac` is now populated from the default-route interface.
 - **More alerts.** GPU and CPU temperature (`alerts.gpu_temp_c`, `cpu_temp_c`,
   `temp_after_min`), disk usage (`disk_pct`) and a monthly cost budget

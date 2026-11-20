@@ -38,6 +38,13 @@ keys_file = ""
 tls_cert = ""
 tls_key = ""
 
+# The dashboard's Settings page can change the price, alerts and sleep-when-idle.
+# Its changes go to this JSON file (relative to this one), which overrides this
+# file key by key; this file is never rewritten. Empty = settings.json.
+# settings_file = ""
+# false = the page shows settings read-only and the write API answers 403.
+# settings_writable = true
+
 [sampling]
 interval = 2.0             # seconds between samples
 raw_retention_days = 7     # raw 2s samples kept this long; hourly totals are kept forever

@@ -224,6 +224,38 @@
   footer { margin-top: 26px; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
   code { font-size: 11.5px; background: var(--surface-1); border: 1px solid var(--border);
          border-radius: 4px; padding: 1px 4px; }
+  /* ---- settings dialog ---- */
+  dialog#settings {
+    width: min(620px, calc(100vw - 24px)); max-height: calc(100vh - 32px); padding: 0;
+    color: var(--text-primary); background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.25);
+  }
+  dialog#settings::backdrop { background: rgba(0,0,0,.35); }
+  #set-form { padding: 16px 18px; }
+  #set-form h2 { font-size: 15px; font-weight: 600; margin: 0 0 6px; }
+  #set-form fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+  #set-form fieldset fieldset { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 14px; }
+  #set-form legend { padding: 0; margin-bottom: 8px; }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px 16px; }
+  .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .field[hidden] { display: none; }
+  .field > .lrow { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; color: var(--text-secondary); }
+  .field input:not([type=checkbox]), .field select, .bill input {
+    font: inherit; color: var(--text-primary); background: var(--plane);
+    border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px; width: 100%;
+  }
+  .field input:focus-visible, .field select:focus-visible, .bill input:focus-visible,
+  .reset:focus-visible, summary:focus-visible { outline: 2px solid var(--series-gpu); outline-offset: 1px; }
+  .field.check { flex-direction: row; align-items: center; gap: 8px; font-size: 12.5px; }
+  .hint { font-size: 11.5px; color: var(--text-muted); }
+  .reset { font-size: 11px; padding: 0 6px; border-radius: 5px; }
+  .bill { grid-column: 1 / -1; font-size: 12.5px; color: var(--text-secondary); }
+  .bill summary { cursor: pointer; color: var(--text-secondary); }
+  .bill .fields { margin-top: 8px; }
+  .set-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 16px; }
+  #set-err { color: var(--status-critical); font-size: 12.5px; }
+  #set-ro { font-size: 12.5px; color: var(--text-secondary); border-left: 3px solid var(--status-warning);
+            padding: 4px 9px; margin: 0 0 8px; }
   @media (max-width: 720px) { .hero { grid-template-columns: 1fr; } .hero-num { font-size: 46px; } }
   @media (max-width: 560px) {
     body { padding: 14px 12px 40px; }
@@ -248,8 +280,126 @@
   <span class="pill" id="cpu-src" title="How CPU power is obtained">-</span>
   <span class="pill" id="tariff-pill">-</span>
   <span class="spacer"></span>
+  <button id="settings-btn" aria-haspopup="dialog">Settings</button>
   <button id="theme-btn" title="Switch light / dark">Theme</button>
 </header>
+
+<!-- Settings. Every input with data-key maps to one setting the server
+     whitelists; values come from GET api/settings, changes go back by POST. -->
+<dialog id="settings" aria-labelledby="set-title">
+<form id="set-form" novalidate>
+  <h2 id="set-title">Settings</h2>
+  <p id="set-ro" hidden></p>
+  <fieldset id="set-fields">
+    <fieldset>
+      <legend class="label">Electricity price</legend>
+      <div class="fields">
+        <div class="field"><span class="lrow"><label for="f-mode">Pricing</label></span>
+          <select id="f-mode" data-key="tariff.mode">
+            <option value="flat">Flat rate</option>
+            <option value="tou">Time of day</option>
+            <option value="dynamic">Dynamic (market price)</option>
+            <option value="none">No cost tracking</option>
+          </select></div>
+        <div class="field" data-modes="flat tou dynamic"><span class="lrow"><label for="f-rate">Price per kWh</label></span>
+          <input id="f-rate" type="number" step="any" min="0" data-key="tariff.rate">
+          <span class="hint" id="f-rate-hint">What one kWh costs.</span></div>
+        <details class="bill" data-modes="flat tou dynamic">
+          <summary>Work it out from a bill</summary>
+          <div class="fields">
+            <div class="field"><span class="lrow"><label for="bill-kwh">kWh used in the period</label></span>
+              <input id="bill-kwh" type="number" step="any" min="0"></div>
+            <div class="field"><span class="lrow"><label for="bill-charge">Energy charge for it</label></span>
+              <input id="bill-charge" type="number" step="any" min="0"></div>
+            <div class="field"><span class="lrow"><label for="bill-fixed">Fixed charge per month (optional)</label></span>
+              <input id="bill-fixed" type="number" step="any" min="0"></div>
+          </div>
+          <p class="hint">Use amounts with taxes included, or leave taxes out here and set them in tax % below &mdash; not both.</p>
+          <button type="button" id="bill-fill">Fill in</button> <span id="bill-out" class="hint" aria-live="polite"></span>
+        </details>
+        <div class="field" data-modes="flat tou dynamic"><span class="lrow"><label for="f-standing">Standing charge per day</label></span>
+          <input id="f-standing" type="number" step="any" min="0" data-key="tariff.standing_charge_per_day">
+          <span class="hint">Fixed daily charge, whatever is used. 0 = none.</span></div>
+        <div class="field" data-modes="flat tou dynamic"><span class="lrow"><label for="f-tax">Tax %</label></span>
+          <input id="f-tax" type="number" step="any" min="0" data-key="tariff.tax_pct">
+          <span class="hint">Added to every price above. 0 if they already include it.</span></div>
+        <div class="field"><span class="lrow"><label for="f-symbol">Currency symbol</label></span>
+          <input id="f-symbol" type="text" maxlength="8" data-key="tariff.symbol"></div>
+        <div class="field" data-modes="tou"><span class="lrow"><label for="f-tou-wd">Weekday prices</label></span>
+          <input id="f-tou-wd" type="text" data-key="tariff.tou_weekday" placeholder="0-8=0.09, 8-24=0.16">
+          <span class="hint">hours=price, comma separated.</span></div>
+        <div class="field" data-modes="tou"><span class="lrow"><label for="f-tou-we">Weekend prices</label></span>
+          <input id="f-tou-we" type="text" data-key="tariff.tou_weekend">
+          <span class="hint">Empty = same as weekdays.</span></div>
+        <div class="field" data-modes="dynamic"><span class="lrow"><label for="f-src">Price source</label></span>
+          <select id="f-src" data-key="tariff.dynamic_source">
+            <option value="energy-charts">energy-charts (European day-ahead)</option>
+            <option value="pvpc">pvpc (Spanish regulated price)</option>
+            <option value="http">Custom URL (set in config.toml)</option>
+          </select></div>
+        <div class="field" data-modes="dynamic"><span class="lrow"><label for="f-zone">Bidding zone</label></span>
+          <input id="f-zone" type="text" data-key="tariff.dynamic_zone" placeholder="DE-LU">
+          <span class="hint">For energy-charts only.</span></div>
+        <div class="field" data-modes="dynamic"><span class="lrow"><label for="f-surcharge">Surcharge per kWh</label></span>
+          <input id="f-surcharge" type="number" step="any" data-key="tariff.dynamic_surcharge">
+          <span class="hint">Grid fees, levies and margin on top of the market price.</span></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend class="label">Alerts</legend>
+      <p class="hint" style="margin:0 0 8px">Empty or 0 turns each one off.</p>
+      <div class="fields">
+        <div class="field"><span class="lrow"><label for="f-idle">Idle draw above (W)</label></span>
+          <input id="f-idle" type="number" step="any" min="0" data-key="alerts.idle_w">
+          <span class="hint">Alert when the GPU is idle but the wall draw stays above this.</span></div>
+        <div class="field"><span class="lrow"><label for="f-after">…for (minutes)</label></span>
+          <input id="f-after" type="number" step="any" min="0" data-key="alerts.after_min">
+          <span class="hint">How long before the first push.</span></div>
+        <div class="field"><span class="lrow"><label for="f-remind">Remind after (minutes)</label></span>
+          <input id="f-remind" type="number" step="any" min="0" data-key="alerts.remind_min">
+          <span class="hint">One urgent reminder if it is still going.</span></div>
+        <div class="field"><span class="lrow"><label for="f-gput">GPU temperature above (°C)</label></span>
+          <input id="f-gput" type="number" step="any" min="0" data-key="alerts.gpu_temp_c"></div>
+        <div class="field"><span class="lrow"><label for="f-cput">CPU temperature above (°C)</label></span>
+          <input id="f-cput" type="number" step="any" min="0" data-key="alerts.cpu_temp_c"></div>
+        <div class="field"><span class="lrow"><label for="f-tempafter">Temperature held for (minutes)</label></span>
+          <input id="f-tempafter" type="number" step="any" min="0" data-key="alerts.temp_after_min"></div>
+        <div class="field"><span class="lrow"><label for="f-disk">Disk usage above (%)</label></span>
+          <input id="f-disk" type="number" step="any" min="0" max="100" data-key="alerts.disk_pct"></div>
+        <div class="field"><span class="lrow"><label for="f-budget">Monthly budget</label></span>
+          <input id="f-budget" type="number" step="any" min="0" data-key="alerts.month_budget">
+          <span class="hint">One push the first time a month's cost passes it.</span></div>
+        <div class="field"><span class="lrow"><label for="f-ntfy">ntfy topic URL</label></span>
+          <input id="f-ntfy" type="url" data-key="alerts.ntfy_url" placeholder="https://ntfy.sh/your-topic">
+          <span class="hint">Where pushes go. Anyone with the URL can read them.</span></div>
+        <div class="field"><span class="lrow"><label for="f-hook">Webhook URL</label></span>
+          <input id="f-hook" type="url" data-key="alerts.webhook_url">
+          <span class="hint">Receives each alert as a JSON POST.</span></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend class="label">Sleep when idle</legend>
+      <div class="fields">
+        <div class="field"><span class="lrow"><label for="f-sleep">Sleep after idle (minutes)</label></span>
+          <input id="f-sleep" type="number" step="any" min="0" data-key="suspend.after_idle_min">
+          <span class="hint">0 = never. GPU idle, no run open, CPU under the limit.</span></div>
+        <div class="field"><span class="lrow"><label for="f-sleepcpu">CPU below (%)</label></span>
+          <input id="f-sleepcpu" type="number" step="any" min="0" max="100" data-key="suspend.max_cpu_pct"></div>
+        <div class="field check"><input id="f-sleepuser" type="checkbox" data-key="suspend.skip_if_logged_in">
+          <span class="lrow"><label for="f-sleepuser">Not while someone is logged in</label></span></div>
+      </div>
+      <p class="hint">The command that puts the machine to sleep can only be changed in config.toml.</p>
+    </fieldset>
+  </fieldset>
+  <div class="set-actions">
+    <button type="submit" id="set-save">Save</button>
+    <button type="button" id="set-cancel">Close</button>
+    <span id="set-err" role="alert"></span>
+  </div>
+</form>
+</dialog>
 
 <!-- anything that makes the numbers below less than the whole truth -->
 <div id="banners" role="status" aria-live="polite"></div>
@@ -1072,6 +1222,126 @@ function renderRuns(runs) {
   tbl.append(head, tb);
   box.appendChild(tbl);
 }
+
+/* ---------------------------------------------------------------- settings */
+let SETTINGS = null;    // last GET api/settings payload
+const dlg = $("settings");
+const keyInputs = () => [...document.querySelectorAll("#set-form [data-key]")];
+
+function inputValue(inp) {
+  if (inp.type === "checkbox") return inp.checked;
+  if (inp.type === "number") return inp.value === "" ? 0 : Number(inp.value);
+  return inp.value.trim();
+}
+function savedValue(key) {
+  const [s, k] = key.split(".");
+  return SETTINGS.values[s][k];
+}
+
+function showMode() {
+  const mode = $("f-mode").value;
+  document.querySelectorAll("#set-form [data-modes]").forEach((node) => {
+    node.hidden = !node.dataset.modes.split(" ").includes(mode);
+  });
+  $("f-rate-hint").textContent = mode === "flat" ? "What one kWh costs."
+    : "Used for hours the schedule or the live price does not cover.";
+}
+
+function setReadOnly(why) {
+  $("set-fields").disabled = !!why;
+  $("set-save").hidden = !!why;
+  $("set-ro").hidden = !why;
+  $("set-ro").textContent = why || "";
+}
+
+function fillSettings(p) {
+  SETTINGS = p;
+  keyInputs().forEach((inp) => {
+    const v = savedValue(inp.dataset.key);
+    if (inp.type === "checkbox") inp.checked = !!v;
+    else inp.value = v == null ? "" : String(v);
+    const row = inp.closest(".field").querySelector(".lrow");
+    row.querySelectorAll(".reset").forEach((b) => b.remove());
+    if (p.editable && p.overridden.includes(inp.dataset.key)) {
+      const b = hel("button", "reset", row, "reset");
+      b.type = "button";
+      const name = inp.closest(".field").querySelector("label").textContent;
+      b.setAttribute("aria-label", `Reset ${name} to the config.toml value`);
+      b.title = "Set from this page; reset to the config.toml value";
+      b.addEventListener("click", () => writeSettings("DELETE", null, inp.dataset.key));
+    }
+  });
+  showMode();
+  setReadOnly(p.editable ? null : (p.redacted && p.redacted.length
+    ? "Read-only: this key cannot change settings (it needs admin scope)."
+    : "Read-only: changing settings from the web is turned off on the server."));
+}
+
+async function writeSettings(method, body, key) {
+  $("set-err").textContent = "";
+  try {
+    const r = await fetch("api/settings" + (key ? "?key=" + encodeURIComponent(key) : ""), {
+      method, cache: "no-store", body: body ? JSON.stringify(body) : undefined,
+      // Both headers are required by the server: they force a CORS preflight,
+      // which is what keeps other web pages from changing settings.
+      headers: { "Content-Type": "application/json", "X-Powermon-Write": "1" },
+    });
+    const p = await r.json().catch(() => ({}));
+    if (r.status === 403) { setReadOnly("Read-only: " + (p.error || "the server refused the change.")); return false; }
+    if (!r.ok) { $("set-err").textContent = p.error || `The server returned HTTP ${r.status}.`; return false; }
+    fillSettings(p);
+    tickNow();
+    return true;
+  } catch (e) {
+    $("set-err").textContent = "Cannot reach powermon.";
+    return false;
+  }
+}
+
+$("settings-btn").addEventListener("click", async () => {
+  $("set-err").textContent = "";
+  try {
+    const r = await fetch("api/settings", { cache: "no-store" });
+    if (!r.ok) throw Object.assign(new Error("http"), { status: r.status });
+    fillSettings(await r.json());
+  } catch (e) {
+    renderBanners([describeFailure(e.status), ...bannerItems(NOW)]);
+    return;
+  }
+  dlg.showModal();
+});
+$("set-cancel").addEventListener("click", () => dlg.close());
+$("f-mode").addEventListener("change", showMode);
+$("set-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const body = {};
+  keyInputs().forEach((inp) => {
+    const key = inp.dataset.key, v = inputValue(inp);
+    if (inp.closest("[hidden]")) return;          // a field for another mode
+    const was = savedValue(key);
+    if (typeof v === "number" ? v === Number(was) : v === was) return;
+    const [s, k] = key.split(".");
+    (body[s] = body[s] || {})[k] = v;
+  });
+  // Only what changed: the server checks it against the whole resulting config.
+  if (!Object.keys(body).length) { dlg.close(); return; }
+  if (await writeSettings("POST", body)) dlg.close();
+});
+$("bill-fill").addEventListener("click", () => {
+  const kwh = parseFloat($("bill-kwh").value), charge = parseFloat($("bill-charge").value);
+  const monthly = parseFloat($("bill-fixed").value);
+  const done = [];
+  if (kwh > 0 && charge >= 0) {
+    $("f-rate").value = (charge / kwh).toFixed(4);
+    done.push(`price ${$("f-rate").value} per kWh`);
+  }
+  if (monthly >= 0) {
+    $("f-standing").value = (monthly * 12 / 365).toFixed(4);
+    done.push(`standing charge ${$("f-standing").value} per day`);
+  }
+  $("bill-out").textContent = done.length ? "Filled in " + done.join(" and ") + ". Save to apply."
+    : "Enter the kWh and the charge for them.";
+});
 
 /* ---------------------------------------------------------------- controls */
 document.querySelectorAll(".filters button[data-range]").forEach((b) => {

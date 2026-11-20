@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import io
 import ipaddress
+import math
 import secrets
 import shlex
 import ssl
@@ -39,6 +40,7 @@ import urllib.request
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta
@@ -52,7 +54,8 @@ HERE = Path(__file__).resolve().parent
 DEFAULTS = {
     "server": {"host": "127.0.0.1", "port": 8787, "token": "",
                "trusted_proxies": "", "require_token_always": False,
-               "keys_file": "", "tls_cert": "", "tls_key": ""},
+               "keys_file": "", "tls_cert": "", "tls_key": "",
+               "settings_writable": True, "settings_file": ""},
     "sampling": {"interval": 2.0, "raw_retention_days": 7, "gap_max_s": 60.0},
     "tariff": {"currency": "EUR", "symbol": "EUR", "mode": "flat",
                "rate": 0.15, "standing_charge_per_day": 0.0, "tax_pct": 0.0,
@@ -110,7 +113,8 @@ def _parse_toml_subset(text: str) -> dict:
     return out
 
 
-def load_config(path: Path) -> dict:
+def load_config(path: Path, overrides: bool = True) -> dict:
+    """Defaults, then config.toml, then what the dashboard saved in settings.json."""
     cfg = {k: dict(v) for k, v in DEFAULTS.items()}
     if path.exists():
         text = path.read_text(encoding="utf-8")
@@ -123,6 +127,9 @@ def load_config(path: Path) -> dict:
         for section, values in user.items():
             if isinstance(values, dict):
                 cfg.setdefault(section, {}).update(values)
+    if overrides:
+        for section, values in read_overrides(settings_path(cfg, path)).items():
+            cfg[section].update(values)
     return cfg
 
 
@@ -279,8 +286,7 @@ def authorize(*, client: str, token_supplied: str | None, keys: list[dict],
     key = match_key(token_supplied, keys)
     if key is None:
         return False, None
-    # admin implies read. No route requires admin yet -- every endpoint is
-    # read-only -- so this gate exists for the first one that does.
+    # admin implies read. Only the settings writes require admin.
     if required_scope == "admin" and key["scope"] != "admin":
         return False, key
     return True, key
@@ -1810,6 +1816,275 @@ class IdleSuspend:
         return max(0.0, self.window - (now - self._since))
 
 
+# --------------------------------------------------------------------------- settings
+#
+# The dashboard can change a whitelist of keys. Its changes go to settings.json,
+# layered over config.toml, never into it: the file a person wrote keeps its
+# comments, and deleting settings.json is a complete undo.
+#
+# Deliberately file-only, because changing them from a browser is a bigger
+# privilege than "change a price":
+#   suspend.command           it is executed
+#   tariff.dynamic_url, dynamic_json_path, dynamic_headers
+#                             the daemon fetches that URL with those headers, so
+#                             a write would be a way to make it send credentials
+#                             anywhere, or probe the local network
+#   [server]                  access control itself, including this API's switch
+#   [meter], [sampling]       URLs fetched with headers again; the database path
+
+# float = a number, 0 or more; "signed" = any number; a tuple = one of those
+# strings; "url" = http(s) or empty.
+EDITABLE = {
+    "tariff": {"mode": Tariff.MODES, "rate": float, "standing_charge_per_day": float,
+               "tax_pct": float, "currency": str, "symbol": str, "tou_weekday": str,
+               "tou_weekend": str, "tou_holidays": str,
+               "dynamic_source": ("",) + Tariff.SOURCES, "dynamic_zone": str,
+               "dynamic_scale": float, "dynamic_surcharge": "signed"},
+    "alerts": {"idle_w": float, "after_min": float, "remind_min": float, "ntfy_url": "url",
+               "webhook_url": "url", "gpu_temp_c": float, "cpu_temp_c": float,
+               "temp_after_min": float, "disk_pct": float, "month_budget": float},
+    "suspend": {"after_idle_min": float, "max_cpu_pct": float, "skip_if_logged_in": bool},
+}
+# An ntfy topic URL is the whole credential for that topic; a webhook URL often is too.
+SECRET_SETTINGS = ("alerts.ntfy_url", "alerts.webhook_url")
+SETTINGS_BODY_MAX = 16 * 1024
+SETTINGS_LOCK = threading.Lock()   # one read-modify-write of settings.json at a time
+
+
+def settings_path(cfg: dict, cfg_path: Path) -> Path:
+    name = Path(os.path.expanduser(str(cfg["server"].get("settings_file") or "settings.json")))
+    return name if name.is_absolute() else Path(cfg_path).parent / name
+
+
+def read_overrides(path: Path) -> dict:
+    """The saved dashboard changes, whitelisted keys only. No file = no changes."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        print(f"powermon: ignoring {path}: {exc}", file=sys.stderr, flush=True)
+        return {}
+    out: dict = {}
+    for section, values in (raw.items() if isinstance(raw, dict) else ()):
+        for key, value in (values.items() if isinstance(values, dict) else ()):
+            if key in EDITABLE.get(section, {}):
+                out.setdefault(section, {})[key] = value
+            else:
+                print(f"powermon: ignoring {section}.{key} in {path}: it can only be set "
+                      "in config.toml", file=sys.stderr, flush=True)
+    return out
+
+
+def write_overrides(path: Path, data: dict) -> None:
+    """Atomic: a crash leaves the old file or the new one, never half of one."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")   # mode 0600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def coerce_setting(name: str, value):
+    """One value in the type its key stores. Raises ValueError naming the key."""
+    section, _, key = name.partition(".")
+    kind = EDITABLE.get(section, {}).get(key)
+    if kind is None:
+        raise ValueError(f"{name} cannot be changed from the web")
+    if kind is bool:
+        if isinstance(value, bool):
+            return value
+        raise ValueError(f"{name} must be true or false")
+    if kind in (float, "signed"):
+        number = None
+        if not isinstance(value, bool):   # float(True) is 1.0
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                pass
+        if number is not None and math.isfinite(number) and (kind == "signed" or number >= 0):
+            return number
+        raise ValueError(f"{name} must be a number" + ("" if kind == "signed" else ", 0 or more"))
+    if not isinstance(value, str) or len(value) > 512 or not value.isprintable():
+        raise ValueError(f"{name} must be one line of text")
+    text = value.strip()
+    if kind == "url":
+        parts = urlparse(text)
+        # Notifier ignores anything else, and urlopen would read file:// too.
+        if text and (parts.scheme not in ("http", "https") or not parts.netloc):
+            raise ValueError(f"{name} must be an http:// or https:// URL, or empty")
+    elif isinstance(kind, tuple):
+        text = text.lower()
+        if text not in kind:
+            raise ValueError(f"{name} must be one of {', '.join(repr(k) for k in kind)}")
+    return text
+
+
+def parse_settings_body(raw: bytes) -> dict:
+    """{"tariff": {"rate": 0.31}, ...} -> the same, coerced. Raises ValueError."""
+    def reject(constant):
+        raise ValueError(f"{constant} is not a number")
+    try:
+        body = json.loads(raw.decode("utf-8"), parse_constant=reject)
+    except ValueError as exc:
+        raise ValueError(f"the body is not valid JSON: {exc}") from None
+    if not isinstance(body, dict) or not body:
+        raise ValueError('expected a JSON object such as {"tariff": {"rate": 0.31}}')
+    out: dict = {}
+    for section, values in body.items():
+        if not isinstance(values, dict):
+            raise ValueError(f"{section} must be an object of settings")
+        for key, value in values.items():
+            out.setdefault(section, {})[key] = coerce_setting(f"{section}.{key}", value)
+    return out
+
+
+def build_policies(cfg: dict, store) -> dict:
+    """Everything a settings change can affect, built from `cfg`.
+
+    The constructors are the validators, so startup and the dashboard reject
+    exactly the same configurations.
+    """
+    notifier = Notifier(cfg)
+    a = cfg["alerts"]
+    temp_s = float(a["temp_after_min"]) * 60.0
+    return {
+        "tariff": Tariff(cfg),
+        "alert": IdleAlert(cfg, notifier),
+        "thresholds": {
+            "gpu_temp": ThresholdAlert("gpu_temp", "GPU temperature", " °C",
+                                       a["gpu_temp_c"], temp_s, notifier),
+            "cpu_temp": ThresholdAlert("cpu_temp", "CPU temperature", " °C",
+                                       a["cpu_temp_c"], temp_s, notifier),
+            # Disk fill is slow, so no dwell: the first reading over is the alert.
+            "disk": ThresholdAlert("disk", "Disk usage", " %", a["disk_pct"], 0, notifier)},
+        "budget": BudgetAlert(a["month_budget"], cfg["tariff"]["symbol"], store, notifier,
+                              lambda when: totals(store, cfg, when)["month"]["cost"]),
+        "suspend": IdleSuspend(cfg, notifier),
+    }
+
+
+def change_settings(cfg: dict, cfg_path: Path, store, changes: dict | None = None,
+                    reset: str | None = None) -> tuple[dict, dict, list[str]]:
+    """Validate a change against the whole resulting config, then save it.
+
+    `changes` are coerced values from parse_settings_body; `reset` is one
+    "section.key" whose override is dropped so config.toml applies again.
+    Returns (new config, its policies, the keys touched). Raises ValueError,
+    and then nothing has been written.
+    """
+    path = settings_path(cfg, cfg_path)
+    overrides = read_overrides(path)
+    new = {section: dict(values) for section, values in cfg.items()}
+    touched = []
+    for section, values in (changes or {}).items():
+        new[section].update(values)
+        overrides.setdefault(section, {}).update(values)
+        touched += [f"{section}.{key}" for key in values]
+    if reset is not None:
+        section, _, key = reset.partition(".")
+        if key not in EDITABLE.get(section, {}):
+            raise ValueError(f"{reset!r} is not a setting that can be changed from the web")
+        new[section][key] = load_config(Path(cfg_path), overrides=False)[section][key]
+        overrides.get(section, {}).pop(key, None)
+        touched.append(reset)
+    try:
+        policies = build_policies(new, store)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(str(exc)) from None
+    write_overrides(path, {section: values for section, values in overrides.items() if values})
+    return new, policies, touched
+
+
+def settings_payload(cfg: dict, cfg_path: Path, admin: bool) -> dict:
+    values = {section: {key: cfg[section].get(key) for key in keys}
+              for section, keys in EDITABLE.items()}
+    redacted = []
+    if not admin:
+        for name in SECRET_SETTINGS:
+            section, key = name.split(".")
+            values[section][key] = ""
+            redacted.append(name)
+    overrides = read_overrides(settings_path(cfg, cfg_path))
+    return {"values": values,
+            "overridden": sorted(f"{s}.{k}" for s, keys in overrides.items() for k in keys),
+            "editable": admin and bool(cfg["server"].get("settings_writable", True)),
+            "redacted": redacted}
+
+
+def this_host_names() -> set[str]:
+    name = socket.gethostname().lower()
+    short = name.split(".")[0]
+    return {name, short, short + ".local"}
+
+
+def host_is_local(host: str | None, names=()) -> bool:
+    """Whether a Host header names this machine, rather than some domain that
+    merely resolves to it: an IP literal, localhost, or the machine's own name."""
+    try:
+        name = urlparse("//" + (host or "")).hostname or ""   # drops the port and IPv6 brackets
+    except ValueError:
+        return False
+    return bool(name) and (_ip(name) is not None or name == "localhost"
+                           or name.endswith(".localhost") or name in names)
+
+
+def write_refusal(method: str, headers, keyless: bool, names=()) -> tuple[int, str] | None:
+    """(status, reason) when a settings write must be refused, else None.
+
+    The settings API is the first thing here that changes state, and the
+    loopback exemption makes it reachable without a key. Two attacks follow,
+    and each rule below closes one:
+
+    CSRF. Any web page open in a browser on this machine can send a request
+    to http://localhost:8787. An HTML form can only send "simple" requests:
+    POST with a form or text/plain body and no custom headers. Requiring
+    Content-Type: application/json *and* X-Powermon-Write: 1 means a
+    cross-origin page must use fetch() with those headers, which makes the
+    browser send a CORS preflight (OPTIONS) first. This server never answers
+    OPTIONS (501), so the real request is never sent. DELETE always preflights,
+    but gets the same rules so there is one rule. And an Origin, when the
+    browser sends one, must be this very server.
+
+    DNS rebinding. A hostile page at evil.example can re-point its own name at
+    127.0.0.1; its requests are then same-origin -- no preflight, Origin equal
+    to Host -- and arrive from loopback, so the header rules above pass. What
+    gives it away is the Host header, which still says evil.example. So a
+    request that got in by the loopback exemption (`keyless`) must carry a Host
+    that names this machine. "Host matches Origin" is NOT accepted instead:
+    under rebinding they match by construction. A request with a key needs no
+    Host rule -- a rebinding page has no way to learn the key, and the cookie
+    is scoped to the real host name -- so a reverse proxy with its own domain
+    works as long as clients authenticate.
+
+    The body is capped so a client cannot make a handler buffer megabytes.
+    """
+    if (headers.get("Content-Type") or "").strip().lower() != "application/json":
+        return 403, "Content-Type must be application/json"
+    if (headers.get("X-Powermon-Write") or "").strip() != "1":
+        return 403, "the X-Powermon-Write: 1 header is required"
+    host = (headers.get("Host") or "").strip().lower()
+    origin = headers.get("Origin")
+    if origin is not None and urlparse(origin.strip()).netloc.lower() != host:
+        return 403, "cross-origin request refused"
+    if keyless and not host_is_local(host, names):
+        return 403, f"Host {host!r} does not name this machine; use its address or a key"
+    if method == "POST":
+        try:
+            length = int(headers.get("Content-Length") or "")
+        except ValueError:
+            return 411, "Content-Length is required"
+        if not 0 < length <= SETTINGS_BODY_MAX:
+            return 413, f"the body must be 1 to {SETTINGS_BODY_MAX} bytes"
+    return None
+
+
 RUN_FIELDS = ["id", "start", "end", "seconds", "kwh", "cost", "peak_w", "avg_w", "name", "running"]
 
 
@@ -1923,24 +2198,10 @@ class Monitor:
         self.cpu = CpuReader(cfg)
         self.gpu = GpuReader(cfg)
         self.meter = MeterPoller(build_meter(cfg))
-        notifier = Notifier(cfg)
-        self.alert = IdleAlert(cfg, notifier)
-        a = cfg["alerts"]
-        temp_s = float(a["temp_after_min"]) * 60.0
-        self.thresholds = {
-            "gpu_temp": ThresholdAlert("gpu_temp", "GPU temperature", " °C",
-                                       a["gpu_temp_c"], temp_s, notifier),
-            "cpu_temp": ThresholdAlert("cpu_temp", "CPU temperature", " °C",
-                                       a["cpu_temp_c"], temp_s, notifier),
-            # Disk fill is slow, so no dwell: the first reading over is the alert.
-            "disk": ThresholdAlert("disk", "Disk usage", " %", a["disk_pct"], 0, notifier)}
-        self.budget = BudgetAlert(
-            a["month_budget"], cfg["tariff"]["symbol"], store, notifier,
-            lambda when: totals(store, cfg, when)["month"]["cost"])
+        # tariff, alert, thresholds, budget, suspend
+        self.apply_settings(cfg, build_policies(cfg, store))
         self.runs = RunTracker(cfg, store)
-        self.suspend = IdleSuspend(cfg, notifier)
         self.mac = default_mac()          # once: the route does not change per request
-        self.tariff = Tariff(cfg)
         self.net = NetReader()
         self.latest: dict = {}
         self.recent: list[dict] = []       # in-memory ring for sparklines
@@ -1951,6 +2212,38 @@ class Monitor:
         self._noted_day: tuple[float, float] | None = None
         self._last_prune = 0.0
         self._stop = threading.Event()
+
+    def apply_settings(self, cfg: dict, policies: dict) -> None:
+        """Swap in the objects built from an edited config, without a restart.
+
+        Each swap is one attribute assignment, atomic under the GIL, so the
+        sampler sees the old object or the new one, never a half-built one; a
+        sample already in flight may finish on the old ones. What survives:
+          - an alert mid-episode keeps its timers and what it has already sent,
+            so raising a threshold ends the episode with the usual "back to
+            normal" push and lowering one does not repeat the first push. An
+            alert being switched off starts fresh, because a disabled
+            ThresholdAlert never observes and would otherwise stay active;
+          - the suspend countdown restarts: shortening the window must not put
+            the machine to sleep the moment the form is saved;
+          - a dynamic tariff's fetched prices are dropped and fetched again on
+            the next sample, billing at `rate` until they arrive;
+          - the budget alert re-reads its once-a-month marker from the database,
+            so it cannot fire twice in one month.
+        """
+        pairs = [(getattr(self, "alert", None), policies["alert"])]
+        pairs += [(getattr(self, "thresholds", {}).get(k), new)
+                  for k, new in policies["thresholds"].items()]
+        for old, new in pairs:
+            enabled = (new.idle_w if isinstance(new, IdleAlert) else new.limit) > 0
+            if old is not None and enabled:
+                for name in ("_over_since", "_under_since", "_alerted", "_reminded"):
+                    if hasattr(old, name):
+                        setattr(new, name, getattr(old, name))
+        for section in EDITABLE:
+            self.cfg[section] = cfg[section]
+        for name, value in policies.items():
+            setattr(self, name, value)
 
     @property
     def rate(self) -> float:
@@ -2388,6 +2681,7 @@ class Handler(BaseHTTPRequestHandler):
     monitor: Monitor
     store: Store
     cfg: dict
+    cfg_path: Path = HERE / "config.toml"
     trusted_proxies: list = []
     keys: list = []
     throttle: "Throttle" = None
@@ -2419,6 +2713,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _check_token(self, route) -> tuple[bool, bool]:
         """Returns (authorised, token_came_from_query)."""
+        self.matched_key = None
         from_query = False
         supplied = None
         values = parse_qs(route.query).get("token")
@@ -2539,6 +2834,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/metrics":
                 self._send(200, prometheus_text(now_payload(self.monitor, self.store, self.cfg)).encode(),
                            "text/plain; version=0.0.4; charset=utf-8")
+            elif path == "/api/settings":
+                self._json(settings_payload(self.cfg, self.cfg_path, self._settings_admin()))
             elif path == "/healthz":
                 # Same verdict as /api/now's health block, so a probe and the
                 # dashboard can never disagree about whether this host is well.
@@ -2553,6 +2850,64 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": repr(exc)}, 500)
             except OSError:
                 pass
+
+
+    def _settings_admin(self) -> bool:
+        """May this request see secrets and change settings? Call after _check_token."""
+        if self.matched_key is not None:
+            return self.matched_key["scope"] == "admin"
+        # No key means the loopback exemption, which DNS rebinding can borrow:
+        # see write_refusal().
+        return host_is_local(self.headers.get("Host"), this_host_names())
+
+    def do_POST(self) -> None:
+        """POST /api/settings saves changes; DELETE /api/settings?key=s.k drops one.
+        The rules a write must pass, and why, are on write_refusal()."""
+        route = urlparse(self.path)
+        try:
+            allowed, _ = self._check_token(route)
+            if not allowed:
+                return self._json({"error": "unauthorised: token required"}, 401)
+            if route.path.rstrip("/") != "/api/settings":
+                return self._json({"error": "not found"}, 404)
+            client = self._client()
+            if not self.cfg["server"].get("settings_writable", True):
+                return self._json({"error": "changing settings from the web is turned off "
+                                            "(server.settings_writable)"}, 403)
+            refusal = write_refusal(self.command, self.headers, self.matched_key is None,
+                                    this_host_names())
+            if refusal:
+                print(f"powermon: refused settings {self.command} from {client}: {refusal[1]}",
+                      file=sys.stderr, flush=True)
+                return self._json({"error": refusal[1]}, refusal[0])
+            if not self._settings_admin():
+                return self._json({"error": "changing settings needs an admin key"}, 403)
+            changes = reset = None
+            if self.command == "POST":
+                changes = parse_settings_body(
+                    self.rfile.read(int(self.headers["Content-Length"])))
+            else:
+                reset = (parse_qs(route.query).get("key") or [""])[0]
+            with SETTINGS_LOCK:
+                cfg, policies, touched = change_settings(self.cfg, self.cfg_path, self.store,
+                                                         changes, reset)
+                self.monitor.apply_settings(cfg, policies)
+            # Key names only: a value may be a secret URL.
+            print(f"powermon: settings {'reset' if reset else 'changed'} by {client}: "
+                  + ", ".join(touched), file=sys.stderr, flush=True)
+            self._json(settings_payload(self.cfg, self.cfg_path, True))
+        except ValueError as exc:
+            self._json({"error": str(exc)}, 400)
+        except BrokenPipeError:
+            pass
+        except Exception as exc:
+            print(f"powermon: request {self.path} failed: {exc!r}", file=sys.stderr, flush=True)
+            try:
+                self._json({"error": repr(exc)}, 500)
+            except OSError:
+                pass
+
+    do_DELETE = do_POST
 
 
 def add_key(cfg: dict, cfg_path: Path, name: str, scope: str = "read") -> int:
@@ -2629,6 +2984,15 @@ def main() -> int:
     cfg_path = Path(cfg_arg) if cfg_arg else HERE / "config.toml"
     cfg = load_config(cfg_path)
 
+    if "--show-config" in flags:
+        shown = {section: dict(values) for section, values in cfg.items()}
+        for section, key in [("server", "token"), ("tariff", "dynamic_url"),
+                             ("tariff", "dynamic_headers"), ("meter", "http_url"),
+                             ("meter", "http_headers"), *(n.split(".") for n in SECRET_SETTINGS)]:
+            if shown.get(section, {}).get(key):
+                shown[section][key] = "(redacted)"
+        print(json.dumps(shown, indent=2, default=str))
+        return 0
     if "--add-key" in flags:
         name = flag_value("--add-key")
         if not name:
@@ -2645,12 +3009,8 @@ def main() -> int:
     # Before anything is opened, sampled or bound.
     fatal = validate_server_config(cfg, cfg_path)
     try:
-        Tariff(cfg)
-    except ValueError as exc:
-        fatal = fatal or str(exc)
-    try:
-        IdleSuspend(cfg, None)
-    except ValueError as exc:
+        build_policies(cfg, None)   # the same checks a dashboard change must pass
+    except (TypeError, ValueError) as exc:
         fatal = fatal or str(exc)
     if fatal:
         print(f"powermon: {fatal}", file=sys.stderr, flush=True)
@@ -2667,7 +3027,7 @@ def main() -> int:
     monitor.sample_once()  # prime deltas so the first HTTP hit has real data
     threading.Thread(target=monitor.run, name="sampler", daemon=True).start()
 
-    Handler.monitor, Handler.store, Handler.cfg = monitor, store, cfg
+    Handler.monitor, Handler.store, Handler.cfg, Handler.cfg_path = monitor, store, cfg, cfg_path
     host, port = cfg["server"]["host"], int(cfg["server"]["port"])
     httpd = ThreadingHTTPServer((host, port), Handler)
 

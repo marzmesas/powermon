@@ -105,12 +105,35 @@ The dashboard shows:
 
 ## Configuration
 
-Everything lives in `config.toml`; [`config.example.toml`](config.example.toml)
-documents every key. Restart after editing:
+The electricity price, the alerts and sleep-when-idle can be set from the
+dashboard: **Settings** in the header. Changes apply at once, without a restart,
+and are saved to `settings.json` next to `config.toml` (`server.settings_file`
+moves it). That file overrides `config.toml` key by key and is the only file the
+page ever writes, so `config.toml` and its comments are left exactly as written.
+A field changed from the page shows a **reset** control, which drops the
+override so the `config.toml` value applies again; deleting `settings.json`
+resets everything.
+
+Changing settings needs an admin key, or a browser on the machine itself
+(addressed by IP, `localhost` or the machine's name). A `read` key sees the
+values with the ntfy and webhook URLs blanked. `server.settings_writable = false`
+turns the page's write access off entirely.
+
+Some settings are deliberately file-only, because a web form that could change
+them would be a bigger privilege than "change a price": `suspend.command` (it
+is executed), `tariff.dynamic_url` / `dynamic_json_path` / `dynamic_headers`
+and everything in `[meter]` (the daemon fetches those URLs with those headers),
+`[server]` (access control itself) and `[sampling]`.
+
+Everything else lives in `config.toml`; [`config.example.toml`](config.example.toml)
+documents every key. Restart after editing it:
 
 ```sh
 systemctl --user restart powermon
 ```
+
+`./powermon.py --show-config` prints the effective configuration, overrides
+included, with the token and secret URLs redacted.
 
 | Section | What it controls |
 |---|---|
@@ -482,6 +505,9 @@ constants. On a host with no GPU and no readable RAPL, every term is modelled.
 | `GET /api/runs?limit=50` (`&format=csv` for CSV) | training runs, newest first: `id`, `start`, `end` (null while running), `seconds`, `kwh`, `cost`, `peak_w`, `avg_w`, `name`, `running`. `/api/now` also carries the open one as `run` |
 | `GET /api/history?range=24h\|7d\|30d\|90d` (`&format=csv` for CSV) | time series (24 h = 5-min averages from raw samples; longer = hourly totals) |
 | `GET /healthz` | the same `health` block as `/api/now`: `ok`, `last_sample_age_s`, `coverage_today`, the live CPU/GPU sources, and an `issues` list at `error` / `warn` / `info` |
+| `GET /api/settings` | the settings the dashboard can change: `{"values": {section: {key: value}}, "overridden": ["tariff.rate", …], "editable": bool, "redacted": [...]}`. A `read` key gets the ntfy and webhook URLs as `""`, listed in `redacted` |
+| `POST /api/settings` | partial update, e.g. `{"tariff": {"rate": 0.31}}`. Admin only; requires `Content-Type: application/json` and `X-Powermon-Write: 1`, and refuses a cross-origin `Origin`. The whole resulting configuration is validated before anything is saved; errors are `400 {"error": "..."}` naming the key. Returns the new `GET` payload |
+| `DELETE /api/settings?key=tariff.rate` | drops one override so the `config.toml` value applies again. Same rules as `POST` |
 | `GET /metrics` | the figures from `/api/now` in Prometheus text format. Needs the token like `/api/*`, except from loopback (see below) |
 
 Prometheus cannot send custom headers, so this documents scraping from the same

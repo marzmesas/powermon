@@ -1,0 +1,27 @@
+services:
+  powermon:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - powermon-data:/data
+      # Optional host sensors, read-only. Uncomment only if the path exists on the host.
+      # - /sys/class/powercap:/sys/class/powercap:ro   # CPU energy (RAPL)
+      # - /sys/class/hwmon:/sys/class/hwmon:ro         # temperatures
+    # Host process list and CPU figures, instead of the container's own.
+    pid: host
+    environment:
+      # Passed through from the host if set; otherwise a token is generated on first start.
+      - POWERMON_TOKEN
+    # NVIDIA GPU: uncomment (needs the NVIDIA Container Toolkit on the host).
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  powermon-data:

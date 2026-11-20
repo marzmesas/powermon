@@ -1,0 +1,7 @@
+.git
+macos
+docs
+tests
+*.db*
+config.toml
+__pycache__

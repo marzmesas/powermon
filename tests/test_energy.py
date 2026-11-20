@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from powermon import Store, totals  # noqa: E402
+from powermon import Store, load_config, totals  # noqa: E402
 
 WATTS = {"total": 200.0, "cpu": 50.0, "gpu": 120.0, "other": 30.0}
 HOUR = 1_786_200_000 // 3600 * 3600  # an exact hour boundary
@@ -100,6 +100,15 @@ class CoverageInTotalsTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.store = Store(Path(self.tmp.name) / "test.db")
         self.cfg = {"tariff": {"rate": RATE, "mode": "flat", "standing_charge_per_day": 0.0}}
+
+    def test_idle_cost_is_the_idle_energy_at_each_hours_price(self):
+        self.store.add_energy(HOUR, HOUR + 3600, WATTS, busy=False, rate=0.10)
+        self.store.add_energy(HOUR + 3600, HOUR + 7200, WATTS, busy=True, rate=0.50)
+        self.store.add_energy(HOUR + 7200, HOUR + 10800, WATTS, busy=False, rate=0.30)
+
+        everything = totals(self.store, load_config(Path("/nonexistent.toml")))["all"]
+        self.assertAlmostEqual(everything["idle_cost"], 0.2 * 0.10 + 0.2 * 0.30)
+        self.assertAlmostEqual(everything["cost"], 0.2 * (0.10 + 0.50 + 0.30))
 
     def test_full_coverage_when_nothing_is_missing(self):
         self.store.add_energy(HOUR, HOUR + 3600, WATTS, busy=False, rate=RATE)

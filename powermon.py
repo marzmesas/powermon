@@ -1366,6 +1366,39 @@ def ntfy_send(url: str, title: str, body: str, priority: str, tags: str) -> None
     threading.Thread(target=post, daemon=True).start()
 
 
+def top_cpu_process(window: float = 0.5, proc: Path = Path("/proc"), sleep=time.sleep) -> str:
+    """Name whatever used the most CPU over a short window, for an alert body.
+
+    Two readings of /proc, because the figure `ps` prints is a lifetime
+    average: a process that has just started spinning barely registers there.
+    """
+    def snapshot() -> dict:
+        out = {}
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                text = (entry / "stat").read_text()
+                fields = text[text.rindex(")") + 2:].split()
+                out[entry.name] = (text[text.index("(") + 1:text.rindex(")")],
+                                   int(fields[11]) + int(fields[12]))   # utime + stime
+            except (OSError, ValueError, IndexError):
+                continue   # the process ended between listing and reading
+        return out
+    try:
+        before = snapshot()
+        sleep(window)
+        after = snapshot()
+        ticks, name = max(((after[pid][1] - before[pid][1], after[pid][0])
+                           for pid in after if pid in before), default=(0, ""))
+        if ticks <= 0:
+            return ""
+        pct = 100.0 * ticks / os.sysconf("SC_CLK_TCK") / window
+        return f"Busiest process: {name}, {pct:.0f} % of a core."
+    except (OSError, ValueError):
+        return ""
+
+
 class IdleAlert:
     """Notices the box drawing real power while the GPU is doing nothing.
 
@@ -1390,8 +1423,12 @@ class IdleAlert:
         self._alerted = False
         self._reminded = False
 
-    def observe(self, now: float, total_w: float | None, busy: bool, detail: str = "") -> dict:
-        """Feed one sample; returns the state published in /api/now."""
+    def observe(self, now: float, total_w: float | None, busy: bool, detail=str) -> dict:
+        """Feed one sample; returns the state published in /api/now.
+
+        `detail` is called only when a push is actually sent, so describing the
+        cause can afford to take a moment.
+        """
         over = self.idle_w > 0 and not busy and total_w is not None and total_w > self.idle_w
         if over:
             self._under_since = None
@@ -1402,13 +1439,13 @@ class IdleAlert:
                 self._alerted = True
                 self._push(f"{self._host} idle at {total_w:.0f} W",
                            f"GPU idle, but the wall draw has been above {self.idle_w:.0f} W "
-                           f"for {minutes:.0f} min. {detail}", "default", "warning")
+                           f"for {minutes:.0f} min. {detail()}", "default", "warning")
             elif (self._alerted and not self._reminded and self.remind_s > 0
                   and now - self._over_since >= self.remind_s):
                 self._reminded = True
                 self._push(f"{self._host} still idle at {total_w:.0f} W",
                            f"Above {self.idle_w:.0f} W with the GPU idle for {minutes:.0f} min. "
-                           f"{detail}", "urgent", "rotating_light")
+                           f"{detail()}", "urgent", "rotating_light")
         elif self._over_since is not None:
             if self._under_since is None:
                 self._under_since = now
@@ -1530,7 +1567,7 @@ class Monitor:
         detail = dict(row)
         detail["alert"] = self.alert.observe(
             now, total_w if gpu_known else None, busy,
-            f"CPU {util:.0f} %, GPU {row['gpu_util']:.0f} %.")
+            lambda: f"CPU {util:.0f} %, GPU {row['gpu_util']:.0f} %. {top_cpu_process()}")
         detail.update({"total_w": total_w, "gpu_w": gpu_w, "other_w": other_w,
                        "partial": not gpu_known,
                        "wall_source": wall_source, "meter_w": meter_w,
@@ -1623,6 +1660,8 @@ def totals(store: Store, cfg: dict, now: datetime | None = None) -> dict:
         row = store.query(
             "SELECT COALESCE(SUM(wh),0) wh, COALESCE(SUM(wh_busy),0) busy,"
             " COALESCE(SUM(wh_idle),0) idle, COALESCE(SUM(cost),0) cost,"
+            # Each hour's idle energy at the price that hour was billed at.
+            " COALESCE(SUM(wh_idle / 1000.0 * rate),0) idle_cost,"
             " COALESCE(MAX(max_w),0) peak, COALESCE(SUM(secs),0) secs,"
             " COALESCE(SUM(secs_missing),0) missing"
             " FROM hourly WHERE hour >= :start" + bound, args)[0]
@@ -1634,6 +1673,8 @@ def totals(store: Store, cfg: dict, now: datetime | None = None) -> dict:
         elapsed = row["secs"] + row["missing"]
         out[label] = {"kwh": row["wh"] / 1000.0, "busy_kwh": row["busy"] / 1000.0,
                       "idle_kwh": row["idle"] / 1000.0,
+                      # What it cost to be powered on and not working.
+                      "idle_cost": row["idle_cost"],
                       "cost": energy_cost + standing_cost,
                       # Split out, because they answer different questions:
                       # one scales with use, the other with calendar days.

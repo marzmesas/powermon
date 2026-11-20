@@ -273,6 +273,10 @@
           <span class="label">State</span>
           <span class="rate-big" id="state">-</span>
         </div>
+        <div>
+          <span class="label">Idle cost this month</span>
+          <span class="rate-big" id="idle-cost">-</span>
+        </div>
       </div>
       <div class="hero-sub" id="hero-sub">-</div>
     </div>
@@ -582,8 +586,11 @@ function renderLive(d) {
   t.appendChild(tile("Projected month", SYM + fmt.money(T.month.projected_30d_cost), "",
     `30 days at the average draw recorded · ${fmt.kwh(T.month.projected_30d_kwh)} kWh`));
   const idleShare = T.month.kwh ? 100 * T.month.idle_kwh / T.month.kwh : 0;
-  t.appendChild(tile("Idle share this month", fmt.w(idleShare), "%",
-    `${SYM}${fmt.money(T.month.cost * idleShare / 100)} powered on, not training`));
+  // Older daemons do not send idle_cost; the share of the bill stands in.
+  const idleCost = T.month.idle_cost ?? T.month.energy_cost * idleShare / 100;
+  $("idle-cost").textContent = SYM + fmt.money(idleCost);
+  t.appendChild(tile("Idle this month", SYM + fmt.money(idleCost), "",
+    `${fmt.w(idleShare)}% of the energy, powered on and not training`));
   t.appendChild(tile("All time", SYM + fmt.money(T.all.cost), "",
     `${fmt.kwh(T.all.kwh)} kWh over ${fmt.dur(T.all.hours * 3600)}`));
 

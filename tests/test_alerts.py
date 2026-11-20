@@ -79,3 +79,35 @@ class IdleAlertTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TopProcessTests(unittest.TestCase):
+    def test_names_the_process_that_used_the_most_cpu_in_the_window(self):
+        import os
+        import tempfile
+        from powermon import top_cpu_process
+
+        def stat(pid, name, ticks):
+            folder = Path(tmp) / str(pid)
+            folder.mkdir(exist_ok=True)
+            # A name with spaces and brackets, as the kernel really writes them.
+            (folder / "stat").write_text(
+                f"{pid} ({name}) S 1 1 1 0 -1 0 0 0 0 0 {ticks} 0 0 0 20 0 1 0 0 0 0\n")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "meminfo").write_text("")          # non-pid entries are skipped
+            stat(10, "old hog", 900_000)                     # busy long ago, quiet now
+            stat(20, "gnome-shell (x)", 100)
+
+            def spin(_):
+                stat(20, "gnome-shell (x)", 100 + os.sysconf("SC_CLK_TCK") // 2)
+
+            text = top_cpu_process(window=1.0, proc=Path(tmp), sleep=spin)
+        self.assertEqual(text, "Busiest process: gnome-shell (x), 50 % of a core.")
+
+    def test_detail_is_only_computed_when_a_push_goes_out(self):
+        alert, sent = make()
+        calls = []
+        for t in range(0, 1200, 2):
+            alert.observe(t, 174, False, lambda: calls.append(t) or "")
+        self.assertEqual((len(sent), len(calls)), (1, 1))

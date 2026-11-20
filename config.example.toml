@@ -162,3 +162,12 @@ cpu_temp_c = 0             # CPU, degrees C
 temp_after_min = 5         # a temperature must stay above its limit this long
 disk_pct = 0               # disk usage percent; alerts immediately
 month_budget = 0           # this month's cost so far, in the tariff currency; once per month
+
+# Put the machine to sleep when it has done nothing for a while. Off by default.
+# All of these must hold continuously: GPU idle, CPU under max_cpu_pct, no
+# training run open, and (if skip_if_logged_in) no pts/tty session in `who`.
+# [suspend]
+# after_idle_min = 0          # minutes; 0 = off
+# command = "systemctl suspend"
+# max_cpu_pct = 20
+# skip_if_logged_in = true

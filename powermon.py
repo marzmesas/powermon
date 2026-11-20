@@ -28,6 +28,7 @@ import hmac
 import io
 import ipaddress
 import secrets
+import shlex
 import ssl
 import json
 import os
@@ -73,6 +74,9 @@ DEFAULTS = {
     "alerts": {"idle_w": 0.0, "after_min": 10.0, "remind_min": 60.0, "ntfy_url": "",
                "webhook_url": "", "gpu_temp_c": 0.0, "cpu_temp_c": 0.0, "temp_after_min": 5.0,
                "disk_pct": 0.0, "month_budget": 0.0},
+    # after_idle_min = 0 leaves the machine alone: sleeping is the user's call.
+    "suspend": {"after_idle_min": 0.0, "command": "systemctl suspend",
+                "max_cpu_pct": 20.0, "skip_if_logged_in": True},
 }
 
 
@@ -1714,6 +1718,98 @@ class RunTracker:
                           "secs_known": r["secs"], "name": self._name()}, time.time())
 
 
+def default_mac(route: Path = Path("/proc/net/route"),
+                net: Path = Path("/sys/class/net")) -> str | None:
+    """MAC of the interface carrying the default route, or None. Tunnels have
+    no address file or an all-zero one, and a zero MAC is useless for wake-up."""
+    try:
+        rows = [line.split() for line in route.read_text().splitlines()[1:]]
+        best = min((r for r in rows if len(r) > 6 and r[1] == "00000000"),
+                   key=lambda r: int(r[6]), default=None)
+        if best is None:
+            return None
+        mac = (net / best[0] / "address").read_text().strip().lower()
+    except (OSError, ValueError):
+        return None
+    return None if not mac or set(mac) <= {"0", ":"} else mac
+
+
+def who_has_tty() -> bool:
+    """True when someone has an interactive session (pts/N or ttyN). If `who`
+    cannot be run the answer is unknown, and unknown must not put it to sleep."""
+    try:
+        out = subprocess.run(["who"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return True
+    return any(len(f) > 1 and f[1].startswith(("pts/", "tty"))
+               for f in (line.split() for line in out.splitlines()))
+
+
+def run_command(command: str) -> None:
+    subprocess.run(shlex.split(command), timeout=30, check=True)
+
+
+class IdleSuspend:
+    """Suspends the machine once it has done nothing for `after_idle_min`.
+
+    "Nothing" = GPU idle, CPU under max_cpu_pct, no open run and (optionally)
+    nobody logged in. Any violation, or a gap between observations longer than
+    GAP_S (the machine was asleep or the sampler stalled), restarts the clock.
+    """
+    GAP_S = 60.0
+
+    def __init__(self, cfg: dict, notifier, logged_in=who_has_tty, runner=run_command):
+        s = cfg["suspend"]
+        try:
+            self.window = float(s["after_idle_min"]) * 60.0
+            self.max_cpu = float(s["max_cpu_pct"])
+        except (TypeError, ValueError):
+            raise ValueError("suspend.after_idle_min and suspend.max_cpu_pct must be numbers") from None
+        self.command = str(s["command"]).strip()
+        if self.window < 0:
+            raise ValueError("suspend.after_idle_min must not be negative (0 turns it off)")
+        self.enabled = self.window > 0
+        if self.enabled and not self.command:
+            raise ValueError("suspend.command must not be empty while suspend.after_idle_min is set")
+        self.skip_if_logged_in = bool(s["skip_if_logged_in"])
+        self.notifier, self._logged_in, self._runner = notifier, logged_in, runner
+        self._since: float | None = None
+        self._prev: float | None = None
+
+    def observe(self, now: float, busy: bool, cpu_pct: float | None, run_open: bool) -> None:
+        if not self.enabled:
+            return
+        prev, self._prev = self._prev, now
+        if prev is not None and now - prev > self.GAP_S:
+            self._since = None
+        # An unreadable CPU is unknown, not idle.
+        if (busy or run_open or cpu_pct is None or cpu_pct >= self.max_cpu
+                or (self.skip_if_logged_in and self._logged_in())):
+            self._since = None
+            return
+        if self._since is None:
+            self._since = now
+        elif now - self._since >= self.window:
+            self._since = None       # success or failure, wait a full window again
+            self._fire()
+
+    def _fire(self) -> None:
+        host = getattr(self.notifier, "host", "machine")
+        self.notifier.push("suspend", "Going to sleep",
+                           f"{host} going to sleep after {self.window / 60:g} min idle",
+                           "low", "zzz")
+        try:
+            self._runner(self.command)
+        except Exception as exc:
+            print(f"powermon: suspend command failed: {exc!r}", file=sys.stderr, flush=True)
+
+    def remaining(self, now: float) -> float | None:
+        """Seconds until suspend, None while the countdown is not running."""
+        if not self.enabled or self._since is None:
+            return None
+        return max(0.0, self.window - (now - self._since))
+
+
 RUN_FIELDS = ["id", "start", "end", "seconds", "kwh", "cost", "peak_w", "avg_w", "name", "running"]
 
 
@@ -1842,6 +1938,8 @@ class Monitor:
             a["month_budget"], cfg["tariff"]["symbol"], store, notifier,
             lambda when: totals(store, cfg, when)["month"]["cost"])
         self.runs = RunTracker(cfg, store)
+        self.suspend = IdleSuspend(cfg, notifier)
+        self.mac = default_mac()          # once: the route does not change per request
         self.tariff = Tariff(cfg)
         self.net = NetReader()
         self.latest: dict = {}
@@ -1931,6 +2029,7 @@ class Monitor:
 
         self.runs.observe(now, busy, run_wh, run_cost, total_w if gpu_known else None,
                           gpu.get("procs") or [])
+        self.suspend.observe(now, busy, util, self.runs.current() is not None)
 
         # The live view keeps numbers so the API shape is unchanged; `partial`
         # and the existing gpu.error flag are how a client knows the total is
@@ -2257,6 +2356,8 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
         "alert": latest.get("alert") or {"active": False, "since": None},
         "alerts": latest.get("alerts", []),
         "run": monitor.runs.current(),
+        "suspend": {"enabled": monitor.suspend.enabled,
+                    "in_s": monitor.suspend.remaining(time.time())},
         "totals": period_totals,
         "health": health(monitor, period_totals, cfg),
         "session": {"wh": monitor.session_wh, "cost": monitor.session_cost,
@@ -2271,6 +2372,7 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
                  "psu_efficiency": float(cfg["power"]["psu_efficiency"]),
                  "interval": float(cfg["sampling"]["interval"]),
                  "host": socket.gethostname(), "uptime_s": uptime_s(),
+                 "mac": monitor.mac,
                  "standing_charge_per_day": monitor.tariff.standing,
                  # So a client can tell what it is talking to before relying on
                  # a field that may not exist in an older daemon.
@@ -2544,6 +2646,10 @@ def main() -> int:
     fatal = validate_server_config(cfg, cfg_path)
     try:
         Tariff(cfg)
+    except ValueError as exc:
+        fatal = fatal or str(exc)
+    try:
+        IdleSuspend(cfg, None)
     except ValueError as exc:
         fatal = fatal or str(exc)
     if fatal:

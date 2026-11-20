@@ -512,8 +512,12 @@ function renderBanners(issues) {
 
 /* Health issues plus the server's active alerts (warning level, one line each). */
 function bannerItems(d) {
-  return [...((d && d.health && d.health.issues) || []),
+  const items = [...((d && d.health && d.health.issues) || []),
           ...((d && d.alerts) || []).map((a) => ({ level: "warn", title: "Alert", message: a.message }))];
+  const s = d && d.suspend;
+  if (s && s.enabled && s.in_s != null && s.in_s < 600)
+    items.push({ level: "info", title: "Sleep", message: `Going to sleep in ${Math.max(1, Math.ceil(s.in_s / 60))} min (idle)` });
+  return items;
 }
 
 function renderLive(d) {

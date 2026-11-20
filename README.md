@@ -181,6 +181,37 @@ dashboard, and the menu bar app's icon turns yellow.
 curl -d "powermon test" https://ntfy.sh/<your-topic>     # check delivery
 ```
 
+## Sleeping when idle
+
+Off by default. Set `suspend.after_idle_min` (minutes, `0` = off) and the box
+suspends itself once **all four** of these have held continuously for that long:
+
+1. the GPU is idle,
+2. CPU utilisation is below `suspend.max_cpu_pct` (20), so a CPU-only job counts as work,
+3. no training run is open,
+4. nobody has an interactive session (no `pts`/`tty` line in `who`; SSH sessions
+   count). `suspend.skip_if_logged_in = false` drops this condition.
+
+Any violation restarts the countdown, as does a gap of over 60 s between samples,
+so a machine that has just woken is not put straight back to sleep. A low-priority
+notification (kind `suspend`) goes out first, then `suspend.command` runs
+(`systemctl suspend` by default). If the command fails, the error is logged and
+nothing is retried for another full window. `/api/now` reports
+`suspend: {enabled, in_s}` and the dashboard shows a banner during the last 10
+minutes. The notification is sent in the background and may not arrive before the
+machine is asleep. A negative value, or an empty command while enabled, stops the
+daemon at startup.
+
+A systemd user service may not be allowed to suspend when no one is logged in at
+the console; polkit can refuse. Try `systemctl suspend` once by hand over SSH
+to see whether it is permitted (the machine will sleep if it is). If it asks for
+authentication or is denied, a polkit rule for `org.freedesktop.login1.suspend`
+is needed.
+
+The macOS app's Wake button sends a Wake-on-LAN packet to `meta.mac`. That needs
+Wake-on-LAN enabled in firmware and in the OS (`ethtool <iface> | grep Wake-on`
+should show `g`), and works only from the same local network.
+
 ## Training runs
 
 A run is a continuous busy stretch (see `[activity]`): it starts once the GPU

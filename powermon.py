@@ -1445,6 +1445,7 @@ class Monitor:
         self.recent: list[dict] = []       # in-memory ring for sparklines
         self.started = time.time()
         self.session_wh = 0.0
+        self.session_cost = 0.0
         self._prev_ts: float | None = None
         self._noted_day: tuple[float, float] | None = None
         self._last_prune = 0.0
@@ -1513,10 +1514,14 @@ class Monitor:
             watts = {"total": total_w, "cpu": cpu_w, "gpu": gpu_w, "other": other_w}
             # Priced at the start of the interval: a sample is seconds long, so
             # at most that much energy lands on the wrong side of a price change.
-            self.store.add_energy(self._prev_ts, now, watts, busy,
-                                  self.tariff.rate_at(self._prev_ts), complete=gpu_known)
+            rate = self.tariff.rate_at(self._prev_ts)
+            self.store.add_energy(self._prev_ts, now, watts, busy, rate, complete=gpu_known)
             if gpu_known:
-                self.session_wh += total_w * (now - self._prev_ts) / 3600.0
+                wh = total_w * (now - self._prev_ts) / 3600.0
+                self.session_wh += wh
+                # Summed at each interval's own price: one rate applied to the
+                # whole session is wrong the moment the price moves.
+                self.session_cost += wh / 1000.0 * rate
         self._prev_ts = now
 
         # The live view keeps numbers so the API shape is unchanged; `partial`
@@ -1832,7 +1837,7 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
         "alert": latest.get("alert") or {"active": False, "since": None},
         "totals": period_totals,
         "health": health(monitor, period_totals, cfg),
-        "session": {"wh": monitor.session_wh, "cost": monitor.session_wh / 1000.0 * rate,
+        "session": {"wh": monitor.session_wh, "cost": monitor.session_cost,
                     "seconds": time.time() - monitor.started},
         "spark": spark,
         "meta": {"symbol": tariff["symbol"], "currency": tariff["currency"],

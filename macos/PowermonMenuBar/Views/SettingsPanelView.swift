@@ -73,6 +73,11 @@ struct SettingsPanelView: View {
                 }
             }
 
+            Toggle("Notify me about alerts", isOn: $settings.notifyOnAlert)
+                .font(.system(size: 11))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+
             Toggle("Launch at login", isOn: $launchAtLogin)
                 .font(.system(size: 11))
                 .toggleStyle(.switch)

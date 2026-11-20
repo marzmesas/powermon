@@ -37,6 +37,9 @@ final class AppSettings: ObservableObject {
     @Published var refreshInterval: Double {
         didSet { defaults.set(refreshInterval, forKey: "refreshInterval") }
     }
+    @Published var notifyOnAlert: Bool {
+        didSet { defaults.set(notifyOnAlert, forKey: "notifyOnAlert") }
+    }
 
     private let defaults: UserDefaults
 
@@ -44,6 +47,7 @@ final class AppSettings: ObservableObject {
         self.defaults = defaults
         serverURLString = defaults.string(forKey: "serverURL") ?? ""
         format = MenuBarFormat(rawValue: defaults.string(forKey: "menuBarFormat") ?? "") ?? .watts
+        notifyOnAlert = defaults.object(forKey: "notifyOnAlert") as? Bool ?? true
         refreshInterval = defaults.double(forKey: "refreshInterval") == 0
             ? 5
             : defaults.double(forKey: "refreshInterval")

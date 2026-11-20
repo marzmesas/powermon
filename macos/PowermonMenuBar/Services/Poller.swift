@@ -22,6 +22,7 @@ final class Poller: ObservableObject {
     private var lastServerTs: Double?
     private var lastServerTsChangedAt: Date?
     private var consecutiveFailures = 0
+    private var alertEdge = AlertEdgeDetector()
 
     /// 5 s → 10 s → 30 s → 60 s. A server that is switched off should not mean a
     /// request every 5 s forever.
@@ -95,6 +96,13 @@ final class Poller: ObservableObject {
         snapshot = fresh
         lastSuccess = now
         consecutiveFailures = 0
+
+        // Observe even when notifications are off, so turning them on later
+        // doesn't announce an alert that has been active for hours.
+        if let edge = alertEdge.observe(active: fresh.alert?.active ?? false),
+           settings.notifyOnAlert {
+            AlertNotifier.post(edge, snapshot: fresh)
+        }
 
         if fresh.ts != lastServerTs {
             lastServerTs = fresh.ts

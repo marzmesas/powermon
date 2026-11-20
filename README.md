@@ -173,6 +173,16 @@ bills at `rate` and says so in the health banner. Each hour is stored with the
 price it was billed at, so changing the tariff changes what you pay from then
 on, never what a past hour cost.
 
+### Carbon
+
+`[carbon] g_per_kwh` is the grams of CO2 emitted per kWh of the electricity you
+buy. When it is set, the dashboard tiles and `/api/now` (`power.co2_g_per_h`,
+`totals.*.co2_kg`), `/api/runs` and `/metrics` report CO2 beside cost. The
+figure depends on the grid and on the hour, so it is a factor you supply, not
+one powermon measures. Your supplier or grid operator usually publishes an
+average. `0`, the default, reports no CO2 at all, because an unknown factor is
+not a zero.
+
 ## Alerts
 
 All off until you set a limit. Each alert sends one push when it trips and one

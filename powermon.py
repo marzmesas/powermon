@@ -63,6 +63,8 @@ DEFAULTS = {
                "dynamic_source": "", "dynamic_zone": "", "dynamic_scale": 1.0,
                "dynamic_surcharge": 0.0, "dynamic_url": "", "dynamic_json_path": "",
                "dynamic_headers": ""},
+    # 0 = not configured: no CO2 figure anywhere. An unknown is not a zero.
+    "carbon": {"g_per_kwh": 0.0},
     "power": {"psu_efficiency": 0.90, "baseline_w": 35.0},
     "cpu": {"rapl_scale": 1.0, "idle_w": 30.0, "max_w": 142.0, "curve_exp": 1.25},
     "gpu": {"enabled": True},
@@ -1714,14 +1716,15 @@ class RunTracker:
             " WHERE id=?", (end, self._flushed, r["wh"], r["cost"], r["peak"], r["secs"],
                             self._name(), self._id))
 
-    def current(self) -> dict | None:
+    def current(self, g_per_kwh: float | None = None) -> dict | None:
         """The open run in the same shape as /api/runs, or None."""
         r = self._run
         if r is None or self._id is None:
             return None
         return shape_run({"id": self._id, "start_ts": r["start"], "end_ts": None,
                           "wh": r["wh"], "cost": r["cost"], "peak_w": r["peak"],
-                          "secs_known": r["secs"], "name": self._name()}, time.time())
+                          "secs_known": r["secs"], "name": self._name()}, time.time(),
+                         g_per_kwh)
 
 
 def default_mac(route: Path = Path("/proc/net/route"),
@@ -1840,6 +1843,7 @@ EDITABLE = {
                "tou_weekend": str, "tou_holidays": str,
                "dynamic_source": ("",) + Tariff.SOURCES, "dynamic_zone": str,
                "dynamic_scale": float, "dynamic_surcharge": "signed"},
+    "carbon": {"g_per_kwh": float},
     "alerts": {"idle_w": float, "after_min": float, "remind_min": float, "ntfy_url": "url",
                "webhook_url": "url", "gpu_temp_c": float, "cpu_temp_c": float,
                "temp_after_min": float, "disk_pct": float, "month_budget": float},
@@ -2085,25 +2089,39 @@ def write_refusal(method: str, headers, keyless: bool, names=()) -> tuple[int, s
     return None
 
 
-RUN_FIELDS = ["id", "start", "end", "seconds", "kwh", "cost", "peak_w", "avg_w", "name", "running"]
+def carbon_factor(cfg: dict) -> float | None:
+    """Grams of CO2 per kWh, or None when not configured (0). Unknown, not zero."""
+    g = float(cfg.get("carbon", {}).get("g_per_kwh", 0.0) or 0.0)
+    return g if g > 0 else None
 
 
-def shape_run(row, now: float) -> dict:
+def _co2_kg(kwh: float, g_per_kwh: float | None) -> float | None:
+    return None if g_per_kwh is None else kwh * g_per_kwh / 1000.0
+
+
+RUN_FIELDS = ["id", "start", "end", "seconds", "kwh", "cost", "co2_kg", "peak_w", "avg_w",
+              "name", "running"]
+
+
+def shape_run(row, now: float, g_per_kwh: float | None = None) -> dict:
     end = row["end_ts"]
     known = row["secs_known"]
     return {"id": row["id"], "start": row["start_ts"], "end": end,
             "seconds": (end if end is not None else now) - row["start_ts"],
-            "kwh": row["wh"] / 1000.0, "cost": row["cost"], "peak_w": row["peak_w"],
+            "kwh": row["wh"] / 1000.0, "cost": row["cost"],
+            "co2_kg": _co2_kg(row["wh"] / 1000.0, g_per_kwh),
+            "peak_w": row["peak_w"],
             # Over the time we could measure, so unreadable intervals do not
             # drag the average down.
             "avg_w": row["wh"] * 3600.0 / known if known > 0 else None,
             "name": row["name"], "running": end is None}
 
 
-def runs_list(store: Store, limit: int = 50, now: float | None = None) -> list[dict]:
+def runs_list(store: Store, limit: int = 50, now: float | None = None,
+              g_per_kwh: float | None = None) -> list[dict]:
     now = time.time() if now is None else now
     rows = store.query("SELECT * FROM runs ORDER BY start_ts DESC, id DESC LIMIT ?", (limit,))
-    return [shape_run(r, now) for r in rows]
+    return [shape_run(r, now, g_per_kwh) for r in rows]
 
 
 def runs_csv(runs: list[dict]) -> str:
@@ -2154,6 +2172,8 @@ def prometheus_text(payload: dict) -> str:
          [({}, alltime["kwh"])]),
         ("powermon_cost_total", "counter", "Cost recorded in total.",
          [({}, alltime["cost"])]),
+        ("powermon_co2_kg_total", "counter", "CO2 recorded in total, in kg.",
+         [({}, alltime["co2_kg"])]),
         ("powermon_energy_idle_kwh_total", "counter", "Energy recorded while idle, in kWh.",
          [({}, alltime["idle_kwh"])]),
         ("powermon_busy", "gauge", "1 while the machine is busy, 0 while idle.",
@@ -2420,6 +2440,7 @@ def totals(store: Store, cfg: dict, now: datetime | None = None) -> dict:
     electricity, which it previously did not.
     """
     now = now or datetime.now()
+    g = carbon_factor(cfg)
     out = {}
     windows = {"today": (_day_start(now), _next_day_start(now)),
                "month": (_month_start(now), _next_month_start(now)),
@@ -2456,6 +2477,7 @@ def totals(store: Store, cfg: dict, now: datetime | None = None) -> dict:
                       # Below 1.0 the figures above are an undercount, not a fall.
                       "hours_missing": row["missing"] / 3600.0,
                       "coverage": (row["secs"] / elapsed) if elapsed > 0 else 1.0}
+        out[label]["co2_kg"] = _co2_kg(out[label]["kwh"], g)
     # Projection: the average draw over the time actually recorded, extended to a
     # 30-day month. Deliberately not scaled by elapsed calendar days -- in a month
     # where recording started on the 28th that would divide by ~28 and read near zero.
@@ -2476,6 +2498,7 @@ def totals(store: Store, cfg: dict, now: datetime | None = None) -> dict:
     else:
         out["month"]["projected_30d_kwh"] = 0.0
         out["month"]["projected_30d_cost"] = 0.0
+    out["month"]["projected_30d_co2_kg"] = _co2_kg(out["month"]["projected_30d_kwh"], g)
     return out
 
 
@@ -2616,11 +2639,13 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
         spark["cpu"].append(r["cpu_w"])
         spark["gpu_temp"].append(r["gpu_temp"])
         spark["cpu_temp"].append(r["cpu_temp"])
+    carbon = carbon_factor(cfg)
     return {
         "ts": latest["ts"],
         "power": {"total_w": latest["total_w"], "cpu_w": latest["cpu_w"],
                   "gpu_w": latest["gpu_w"], "other_w": latest["other_w"],
                   "cost_per_h": latest["total_w"] / 1000.0 * rate,
+                  "co2_g_per_h": None if carbon is None else latest["total_w"] / 1000.0 * carbon,
                   "source": latest.get("cpu_power_source", "estimated"),
                   # True when a meter failed this sample: the total is missing
                   # that component and no energy was recorded for the interval.
@@ -2648,7 +2673,7 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
         "net": latest.get("net", {}), "busy": bool(latest["busy"]),
         "alert": latest.get("alert") or {"active": False, "since": None},
         "alerts": latest.get("alerts", []),
-        "run": monitor.runs.current(),
+        "run": monitor.runs.current(carbon),
         "suspend": {"enabled": monitor.suspend.enabled,
                     "in_s": monitor.suspend.remaining(time.time())},
         "totals": period_totals,
@@ -2658,6 +2683,8 @@ def now_payload(monitor: Monitor, store: Store, cfg: dict) -> dict:
         "spark": spark,
         "meta": {"symbol": tariff["symbol"], "currency": tariff["currency"],
                  "rate": rate, "mode": tariff["mode"],
+                 # Grams per kWh as configured, or None: the dashboard shows CO2 only when set.
+                 "co2_g_per_kwh": carbon,
                  # "fallback" while an hourly price could not be fetched.
                  "rate_source": monitor.tariff.source,
                  "tax_pct": float(tariff.get("tax_pct", 0.0) or 0.0),
@@ -2824,7 +2851,7 @@ class Handler(BaseHTTPRequestHandler):
                     limit = max(1, min(1000, int((q.get("limit") or ["50"])[0])))
                 except ValueError:
                     limit = 50
-                runs = runs_list(self.store, limit)
+                runs = runs_list(self.store, limit, g_per_kwh=carbon_factor(self.cfg))
                 if (q.get("format") or [""])[0] == "csv":
                     self._send(200, runs_csv(runs).encode(), "text/csv; charset=utf-8",
                                extra=[("Content-Disposition",

@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -126,6 +127,24 @@ class CoverageInTotalsTests(unittest.TestCase):
 
     def test_empty_database_reports_full_coverage_not_a_divide_by_zero(self):
         self.assertAlmostEqual(totals(self.store, self.cfg)["all"]["coverage"], 1.0)
+
+    def test_co2_is_kwh_times_the_configured_factor(self):
+        self.store.add_energy(HOUR, HOUR + 3600, WATTS, busy=False, rate=RATE)   # 0.2 kWh
+        cfg = dict(self.cfg, carbon={"g_per_kwh": 400.0})
+        result = totals(self.store, cfg, now=datetime.fromtimestamp(HOUR))
+
+        self.assertAlmostEqual(result["all"]["co2_kg"], 0.2 * 400.0 / 1000.0)
+        self.assertGreater(result["month"]["projected_30d_kwh"], 0.0)
+        self.assertAlmostEqual(result["month"]["projected_30d_co2_kg"],
+                               result["month"]["projected_30d_kwh"] * 0.4)
+
+    def test_no_co2_figure_when_the_factor_is_zero_or_absent(self):
+        self.store.add_energy(HOUR, HOUR + 3600, WATTS, busy=False, rate=RATE)
+        for cfg in (self.cfg, dict(self.cfg, carbon={"g_per_kwh": 0.0})):
+            result = totals(self.store, cfg)
+            for period in ("today", "month", "all"):
+                self.assertIsNone(result[period]["co2_kg"])
+            self.assertIsNone(result["month"]["projected_30d_co2_kg"])
 
 
 class MigrationTests(unittest.TestCase):

@@ -92,6 +92,11 @@ tax_pct = 0
 # dynamic_json_path = "state"
 # dynamic_headers = "Authorization: Bearer <token>"
 
+[carbon]
+# Grams of CO2 per kWh of the electricity you buy. Your supplier or grid operator
+# publishes an average. 0 = not configured: no CO2 figure is shown anywhere.
+g_per_kwh = 0
+
 [power]
 psu_efficiency = 0.90      # 80+ Gold at partial load ~0.89-0.92; wall = dc_power / efficiency
 baseline_w = 35.0          # DC draw of everything that is not CPU or GPU:

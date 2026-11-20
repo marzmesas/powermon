@@ -116,6 +116,18 @@ class ShapeTests(unittest.TestCase):
         self.assertEqual(rows[2][RUN_FIELDS.index("avg_w")], "")
         self.assertEqual(rows[2][RUN_FIELDS.index("end")], "")
 
+    def test_run_co2_from_its_kwh_and_the_factor(self):
+        self.assertAlmostEqual(shape_run(self.ROW, 400.0, 400.0)["co2_kg"], 0.5 * 400.0 / 1000.0)
+        self.assertIsNone(shape_run(self.ROW, 400.0)["co2_kg"])
+        self.assertIsNone(shape_run(self.ROW, 400.0, None)["co2_kg"])
+
+    def test_csv_co2_column_blank_when_not_configured(self):
+        done = dict(self.ROW, end_ts=200.0, secs_known=100.0)
+        off = list(csv.reader(io.StringIO(runs_csv([shape_run(done, 0)]))))
+        on = list(csv.reader(io.StringIO(runs_csv([shape_run(done, 0, 400.0)]))))
+        self.assertEqual(off[1][RUN_FIELDS.index("co2_kg")], "")
+        self.assertAlmostEqual(float(on[1][RUN_FIELDS.index("co2_kg")]), 0.2)
+
 
 if __name__ == "__main__":
     unittest.main()

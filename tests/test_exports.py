@@ -48,7 +48,7 @@ def sample_payload(**overrides):
         "disk": {"pct": None},
         "busy": True,
         "alert": {"active": False, "since": None},
-        "totals": {"all": {"kwh": 12.5, "cost": 1.875, "idle_kwh": 2.0}},
+        "totals": {"all": {"kwh": 12.5, "cost": 1.875, "idle_kwh": 2.0, "co2_kg": None}},
         "health": {"last_sample_age_s": 0.8},
         "meta": {"rate": 0.15, "version": "0.1.0", "host": 'box"1'},
     }
@@ -80,6 +80,14 @@ class PrometheusTests(unittest.TestCase):
         ]
         for line in expected:
             self.assertIn(line, self.lines)
+
+    def test_co2_counter_only_when_a_factor_is_configured(self):
+        self.assertFalse(any(ln.startswith("powermon_co2_kg_total") for ln in self.lines))
+        payload = sample_payload()
+        payload["totals"]["all"]["co2_kg"] = 5.0
+        lines = prometheus_text(payload).splitlines()
+        self.assertIn("# TYPE powermon_co2_kg_total counter", lines)
+        self.assertIn("powermon_co2_kg_total 5.0", lines)
 
     def test_none_values_are_omitted_not_zero(self):
         samples = [ln for ln in self.lines if not ln.startswith("#")]

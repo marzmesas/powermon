@@ -323,6 +323,9 @@
         <div class="field" data-modes="flat tou dynamic"><span class="lrow"><label for="f-tax">Tax %</label></span>
           <input id="f-tax" type="number" step="any" min="0" data-key="tariff.tax_pct">
           <span class="hint">Added to every price above. 0 if they already include it.</span></div>
+        <div class="field"><span class="lrow"><label for="f-carbon">Carbon intensity (g CO2 per kWh)</label></span>
+          <input id="f-carbon" type="number" step="any" min="0" data-key="carbon.g_per_kwh">
+          <span class="hint">Your supplier or grid operator publishes this. 0 = do not show CO2.</span></div>
         <div class="field"><span class="lrow"><label for="f-symbol">Currency symbol</label></span>
           <input id="f-symbol" type="text" maxlength="8" data-key="tariff.symbol"></div>
         <div class="field" data-modes="tou"><span class="lrow"><label for="f-tou-wd">Weekday prices</label></span>
@@ -749,10 +752,13 @@ function renderLive(d) {
   // Coverage is only worth the words when it is not total.
   const cov = (p) => (p.coverage != null && p.coverage < 0.999)
     ? ` · ${fmt.w(100 * p.coverage)}% measured` : "";
+  // CO2 only when the server has a carbon factor; null means not configured.
+  const co2 = (kg) => (d.meta.co2_g_per_kwh == null || kg == null) ? ""
+    : ` · ${kg >= 100 ? kg.toFixed(0) : kg.toFixed(1)} kg CO2`;
   t.appendChild(tile("Today", SYM + fmt.money(T.today.cost), "",
-    `${fmt.kwh(T.today.kwh)} kWh · peak ${fmt.w(T.today.peak_w)} W${cov(T.today)}`));
+    `${fmt.kwh(T.today.kwh)} kWh · peak ${fmt.w(T.today.peak_w)} W${cov(T.today)}${co2(T.today.co2_kg)}`));
   t.appendChild(tile("Month to date", SYM + fmt.money(T.month.cost), "",
-    `${fmt.kwh(T.month.kwh)} kWh · ${fmt.dur(T.month.hours * 3600)} recorded${cov(T.month)}`));
+    `${fmt.kwh(T.month.kwh)} kWh · ${fmt.dur(T.month.hours * 3600)} recorded${cov(T.month)}${co2(T.month.co2_kg)}`));
   t.appendChild(tile("Projected month", SYM + fmt.money(T.month.projected_30d_cost), "",
     `30 days at the average draw recorded · ${fmt.kwh(T.month.projected_30d_kwh)} kWh`));
   const idleShare = T.month.kwh ? 100 * T.month.idle_kwh / T.month.kwh : 0;
@@ -762,7 +768,7 @@ function renderLive(d) {
   t.appendChild(tile("Idle this month", SYM + fmt.money(idleCost), "",
     `${fmt.w(idleShare)}% of the energy, powered on and not training`));
   t.appendChild(tile("All time", SYM + fmt.money(T.all.cost), "",
-    `${fmt.kwh(T.all.kwh)} kWh over ${fmt.dur(T.all.hours * 3600)}`));
+    `${fmt.kwh(T.all.kwh)} kWh over ${fmt.dur(T.all.hours * 3600)}${co2(T.all.co2_kg)}`));
 
   /* GPU processes */
   const p = $("procs");

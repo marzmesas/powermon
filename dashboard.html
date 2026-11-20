@@ -208,8 +208,15 @@
   .split-scale span:nth-child(2) { display: flex; justify-content: space-between; border-top: 1px solid var(--rule-strong); padding-top: 3px; }
   .spark-box { margin-top: 6px; border-top: 1px solid var(--rule); padding-top: 10px; }
   .spark-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-  .hero-spark { width: 100%; height: 110px; display: block; margin-top: 6px; }
-  .spark-rule { stroke: var(--rule-strong); stroke-width: 1; stroke-dasharray: 2 5; vector-effect: non-scaling-stroke; }
+  /* One bar per quarter hour: height is the draw, colour is working or idle. */
+  .daystrip { display: flex; align-items: flex-end; gap: 1px; height: 96px; margin-top: 8px;
+              border-bottom: 1px solid var(--rule-strong); }
+  .daystrip i { flex: 1 1 0; min-width: 0; min-height: 2px; background: var(--rest); border-radius: 1px 1px 0 0; }
+  .daystrip i.work { background: var(--gpu); }
+  .daystrip i.gap, .legend .key.day-gap { background: repeating-linear-gradient(135deg, var(--rule-strong) 0 2px, transparent 2px 4px); }
+  .daystrip i.gap { height: 100%; opacity: .6; }
+  .day-axis { display: flex; justify-content: space-between; margin-top: 4px;
+              font: var(--fs-xs)/1.4 var(--mono); color: var(--ink-3); }
   .say {
     margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--rule);
     font: 400 var(--fs-lg)/1.5 var(--sans); color: var(--ink); text-wrap: pretty;
@@ -566,9 +573,15 @@
       <div class="split-scale" aria-hidden="true"><span></span><span><span>0</span><span id="split-max">-</span></span><span></span></div>
       <div class="note" id="split-note">No reading yet.</div>
       <div class="spark-box">
-        <div class="spark-head"><span class="lbl" id="spark-note">Total draw</span><span class="lbl" id="spark-range"></span></div>
-        <svg class="hero-spark live" id="spark" viewBox="0 0 600 84" preserveAspectRatio="none"
-             role="img" aria-label="Total power over the last few minutes"></svg>
+        <div class="spark-head"><span class="lbl">Last 24 hours</span><span class="lbl" id="day-sum"></span></div>
+        <div class="daystrip" id="daystrip" role="img" aria-label="Activity over the last 24 hours"></div>
+        <div class="day-axis" id="day-axis" aria-hidden="true"></div>
+        <div class="legend">
+          <span><span class="key" style="background:var(--gpu)"></span>working</span>
+          <span><span class="key" style="background:var(--rest)"></span>idle</span>
+          <span><span class="key day-gap"></span>no data</span>
+          <span>bar height = watts, on the dial's scale</span>
+        </div>
       </div>
     </div>
   </div>
@@ -884,31 +897,48 @@ function renderSplit(d) {
 }
 const SPLIT_PREV = {};
 
-function drawSpark(svg, values, colorVar) {
-  svg.textContent = "";
-  const pts = (values || []).filter((v) => v != null);
-  if (pts.length < 2) return null;
-  const W = 600, H = 84, pad = 6;
-  // Scaled to the window's own range, not from zero: a steady 103 W would
-  // otherwise be a flat line on top of a slab. A minimum span keeps sensor
-  // noise from being stretched into drama.
-  const lo = Math.min(...pts), hi = Math.max(...pts), mean = pts.reduce((a, v) => a + v, 0) / pts.length;
-  const span = Math.max(hi - lo, 12, mean * 0.08), mid = (hi + lo) / 2;
-  const min = mid - span * 0.75, max = mid + span * 0.75;
-  const x = (i) => i * W / (values.length - 1);
-  const y = (v) => H - pad - (v - min) / (max - min) * (H - pad * 2);
-  let d = "";
-  values.forEach((v, i) => {
-    if (v == null) return;
-    d += (d ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1);
-  });
-  const grad = el("linearGradient", { id: "spark-fade", x1: 0, y1: 0, x2: 0, y2: 1 }, el("defs", {}, svg));
-  el("stop", { offset: 0, "stop-color": `var(${colorVar})`, "stop-opacity": .28 }, grad);
-  el("stop", { offset: 1, "stop-color": `var(${colorVar})`, "stop-opacity": 0 }, grad);
-  [lo, hi].forEach((v) => el("line", { x1: 0, x2: W, y1: y(v), y2: y(v), class: "spark-rule" }, svg));
-  el("path", { d: d + `L${W} ${H}L0 ${H}Z`, fill: "url(#spark-fade)" }, svg);
-  el("path", { d, class: "edge", stroke: `var(${colorVar})` }, svg);
-  return { lo, hi };
+/* The last 24 hours as one bar per quarter hour. It answers "when was it
+   working, and how hard" at a glance, which a three-minute trace could not. */
+function renderDay(series) {
+  const strip = $("daystrip"), axis = $("day-axis");
+  strip.textContent = ""; axis.textContent = "";
+  const t = (series && series.t) || [];
+  if (!t.length) { $("day-sum").textContent = ""; return; }
+  const step = series.bucket_s || 300, per = Math.max(1, Math.round(900 / step));
+  const top = DIAL.max || Math.max(1, ...series.total.filter((v) => v != null));
+  let workS = 0, idleS = 0;
+  for (let i = 0; i < t.length; i += per) {
+    const watts = [], busy = [];
+    for (let j = i; j < Math.min(i + per, t.length); j++) {
+      if (series.total[j] == null) continue;
+      watts.push(series.total[j]); busy.push(series.busy_frac ? series.busy_frac[j] || 0 : 0);
+      const b = busy[busy.length - 1];
+      workS += step * b; idleS += step * (1 - b);
+    }
+    const cell = document.createElement("i");
+    if (!watts.length) {
+      cell.className = "gap"; cell.title = `${fmt.clock(t[i])} · no data`;
+    } else {
+      const w = watts.reduce((a, v) => a + v, 0) / watts.length;
+      const working = busy.reduce((a, v) => a + v, 0) / busy.length >= 0.5;
+      if (working) cell.className = "work";
+      cell.style.height = Math.max(2, Math.min(100, 100 * w / top)) + "%";
+      cell.title = `${fmt.clock(t[i])} · ${fmt.w(w)} W · ${working ? "working" : "idle"}`;
+    }
+    strip.appendChild(cell);
+  }
+  const first = t[0], last = t[t.length - 1];
+  for (let k = 0; k <= 4; k++) hel("span", "", axis, k === 4 ? "now" : fmt.clock(first + (last - first) * k / 4));
+  const sum = `working ${fmt.dur(workS)} · idle ${fmt.dur(idleS)}`;
+  $("day-sum").textContent = sum;
+  strip.setAttribute("aria-label", "Last 24 hours: " + sum);
+}
+
+async function tickDay() {
+  try {
+    const r = await fetch("api/history?range=24h", { cache: "no-store" });
+    if (r.ok) renderDay((await r.json()).series);
+  } catch (e) { /* keep the previous strip; tickNow owns the banner */ }
 }
 
 /* ---------------------------------------------------------------- instruments */
@@ -1134,11 +1164,6 @@ function renderLive(d) {
 
   updateDial(d);
   renderSplit(d);
-  const sp = (d.spark && d.spark.total) || [];
-  const range = drawSpark($("spark"), sp, "--power");
-  $("spark-note").textContent = `Total draw, last ${Math.round(sp.length * (meta.interval || 2) / 60)} min`;
-  // The trace is zoomed to its own range, so say what that range is.
-  $("spark-range").textContent = range ? `${fmt.w(range.lo)} to ${fmt.w(range.hi)} W` : "";
   $("hero-sub").textContent = "Updated " + fmt.clockS(d.ts);
   renderMoney(d);
   renderStrip(d);
@@ -1842,7 +1867,6 @@ $("theme-btn").addEventListener("click", () => {
   root.dataset.theme = dark ? "light" : "dark";
   try { localStorage.setItem("powermon-theme", root.dataset.theme); } catch (e) { /* private window */ }
   if (SERIES) renderHistory(SERIES);
-  if (NOW) drawSpark($("spark"), NOW.spark && NOW.spark.total, "--power");
 });
 try {
   const savedTheme = localStorage.getItem("powermon-theme");
@@ -1866,12 +1890,14 @@ dialFace();
 tickNow();
 tickHistory();
 tickRuns();
+setTimeout(tickDay, 800);   // after the first reading, so the bars share the dial's scale
 tickPeers();
 peekSettings();
 setInterval(tickPeers, 15000);
 setInterval(tickNow, 2000);
 setInterval(tickHistory, 60000);
 setInterval(tickRuns, 60000);
+setInterval(tickDay, 300000);
 </script>
 </body>
 </html>

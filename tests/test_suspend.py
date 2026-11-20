@@ -165,3 +165,20 @@ class DefaultMacTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SendGraceTests(unittest.TestCase):
+    def test_a_configured_push_gets_time_to_leave_before_the_suspend(self):
+        from unittest import mock
+        import powermon
+
+        order = []
+        notifier = type("N", (), {"host": "h", "ntfy": "https://ntfy.example/t", "webhook": "",
+                                  "push": lambda self, *a: order.append("push")})()
+        cfg = {"suspend": {"after_idle_min": 1, "command": "true", "max_cpu_pct": 20,
+                           "skip_if_logged_in": False}}
+        suspend = powermon.IdleSuspend(cfg, notifier, runner=lambda c: order.append("run"))
+        with mock.patch.object(powermon.time, "sleep", lambda s: order.append(f"wait {s:g}")):
+            for t in range(0, 70, 2):
+                suspend.observe(float(t), False, 1.0, False)
+        self.assertEqual(order, ["push", "wait 4", "run"])

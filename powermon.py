@@ -1913,6 +1913,8 @@ class IdleSuspend:
     """
     GAP_S = 60.0
 
+    SEND_GRACE_S = 4.0   # how long a push gets to leave before the suspend
+
     def __init__(self, cfg: dict, notifier, logged_in=who_has_tty, runner=run_command):
         s = cfg["suspend"]
         try:
@@ -1953,6 +1955,10 @@ class IdleSuspend:
         self.notifier.push("suspend", "Going to sleep",
                            f"{host} going to sleep after {self.window / 60:g} min idle",
                            "low", "zzz")
+        # Pushes leave on their own threads; give them a moment, or the
+        # machine is asleep before the message that says so has been sent.
+        if getattr(self.notifier, "ntfy", "") or getattr(self.notifier, "webhook", ""):
+            time.sleep(self.SEND_GRACE_S)
         try:
             self._runner(self.command)
         except Exception as exc:

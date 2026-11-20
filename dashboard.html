@@ -1376,7 +1376,12 @@ $("settings-btn").addEventListener("click", async () => {
     if (!r.ok) throw Object.assign(new Error("http"), { status: r.status });
     fillSettings(await r.json());
   } catch (e) {
-    renderBanners([describeFailure(e.status), ...bannerItems(NOW)]);
+    // 404 only happens when this page is newer than the daemon behind it.
+    const why = e.status === 404
+      ? { level: "warn", title: "Settings", message: "This powermon is older than "
+          + "this page and has no settings yet. Update it and restart the service." }
+      : describeFailure(e.status);
+    renderBanners([why, ...bannerItems(NOW)]);
     return;
   }
   dlg.showModal();

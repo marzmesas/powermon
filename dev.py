@@ -38,15 +38,27 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/__mtime":
             self.reply(200, "text/plain", str(PAGE.stat().st_mtime_ns).encode())
         else:
-            request = urllib.request.Request(UPSTREAM + self.path, headers={
-                "X-Powermon-Token": os.environ.get("POWERMON_TOKEN", "")})
-            try:
-                with urllib.request.urlopen(request, timeout=10) as r:
-                    self.reply(r.status, r.headers.get("Content-Type", "application/json"), r.read())
-            except urllib.error.HTTPError as exc:
-                self.reply(exc.code, "text/plain", exc.read())
-            except OSError as exc:
-                self.reply(502, "text/plain", f"cannot reach {UPSTREAM}: {exc}".encode())
+            self.forward()
+
+    def forward(self):
+        # Writes too, so the Settings dialog works: the body and the two
+        # headers the write API insists on go through unchanged.
+        headers = {"X-Powermon-Token": os.environ.get("POWERMON_TOKEN", "")}
+        for name in ("Content-Type", "X-Powermon-Write"):
+            if self.headers.get(name):
+                headers[name] = self.headers[name]
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0)) or None
+        request = urllib.request.Request(UPSTREAM + self.path, data=body,
+                                         method=self.command, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=10) as r:
+                self.reply(r.status, r.headers.get("Content-Type", "application/json"), r.read())
+        except urllib.error.HTTPError as exc:
+            self.reply(exc.code, exc.headers.get("Content-Type", "text/plain"), exc.read())
+        except OSError as exc:
+            self.reply(502, "text/plain", f"cannot reach {UPSTREAM}: {exc}".encode())
+
+    do_POST = do_DELETE = forward
 
     def reply(self, status, ctype, body):
         self.send_response(status)

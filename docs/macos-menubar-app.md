@@ -50,7 +50,7 @@ SSH would be the right call only if there were no daemon to talk to. There is on
 
 ## 3. The backend
 
-`powermon` runs on the Linux training box as a systemd user service, samples
+`powermon` runs on a Linux server as a systemd user service, samples
 every 2 s, and serves HTTP on port 8787. Repo root has the full README.
 
 ### Reaching it
@@ -166,7 +166,7 @@ sensor read fails.
     "symbol": "€", "currency": "EUR", "rate": 0.15, "mode": "flat",
     "baseline_w": 35.0, "psu_efficiency": 0.9,
     "interval": 2.0,                // server sample period, seconds
-    "host": "marzmesas-trainbox",
+    "host": "gpu-server",
     "uptime_s": 329770.41,
     "standing_charge_per_day": 0.0
   }
@@ -242,7 +242,7 @@ grows with content (~380–440 pt typical).
 
 ```
 ┌──────────────────────────────────┐
-│ marzmesas-trainbox      ● training│   host + state
+│ gpu-server              ● training│   host + state
 │ up 3d 20h · CPU estimated         │   secondary, 11pt
 ├──────────────────────────────────┤
 │                                   │
@@ -307,7 +307,7 @@ reading is a lie when the truth is "the read failed".
 
 Standard `Settings` scene, ⌘, — one pane:
 
-- **Server URL** — text field, e.g. `http://marzmesas-trainbox:8787`. Validate as URL.
+- **Server URL** — text field, e.g. `http://my-server:8787`. Validate as URL.
 - **Token** — `SecureField`. Stored in Keychain, never `UserDefaults`.
 - **Test connection** — button; performs one `GET /api/now` and reports
   ✓ connected / ✗ 401 token rejected / ✗ unreachable, with the underlying error.

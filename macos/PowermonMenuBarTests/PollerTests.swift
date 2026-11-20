@@ -62,7 +62,7 @@ final class PollerTests: XCTestCase {
         let poller = makePoller()
         await wait(poller, for: { $0 == .live }, timeout: 5, "live")
 
-        XCTAssertEqual(poller.snapshot?.meta.host, "marzmesas-trainbox")
+        XCTAssertEqual(poller.snapshot?.meta.host, "gpu-server")
         XCTAssertEqual(poller.snapshot?.power.totalW ?? 0, 104.42, accuracy: 0.01)
     }
 

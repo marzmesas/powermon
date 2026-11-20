@@ -1,6 +1,6 @@
 # Powermon — macOS menu bar app
 
-A client of the `powermon` service on the training box. Shows what the machine
+A client of the `powermon` service running on a Linux server. Shows what the machine
 is drawing right now in the menu bar; clicking opens a panel with live detail.
 It collects nothing itself. Full spec: [`../docs/macos-menubar-app.md`](../docs/macos-menubar-app.md).
 
@@ -25,7 +25,7 @@ The built app lands in DerivedData; `Powermon.app` can be copied to
 
 The app starts with no configuration. Open **Settings** (⌘,) from the panel and set:
 
-- **Server URL** — `http://marzmesas-trainbox:8787` over Tailscale, or
+- **Server URL** — `http://<your-server>:8787` over Tailscale, or
   `http://localhost:8787` through an SSH tunnel.
 - **Token** — the `server.token` from the server's `config.toml`. Stored in the
   Keychain. Not needed for a tunnel, because that arrives as loopback.

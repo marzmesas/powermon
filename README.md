@@ -29,7 +29,7 @@
   time-of-day or live market price.
 - **Idle share**: what you paid to leave the machine on while it was not
   training.
-- **A push to your phone** when the box burns power with the GPU idle.
+- **A push to your phone** when the machine burns power with the GPU idle.
 - **Three ways to look**: a web dashboard, `pwr` in the terminal, and a macOS
   menu bar app.
 - **Nothing to install**: one Python file, standard library only. It uses

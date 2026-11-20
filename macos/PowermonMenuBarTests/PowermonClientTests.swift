@@ -24,7 +24,7 @@ final class StubURLProtocol: URLProtocol {
 }
 
 final class PowermonClientTests: XCTestCase {
-    private let baseURL = URL(string: "http://marzmesas-trainbox:8787")!
+    private let baseURL = URL(string: "http://gpu-server:8787")!
 
     private func makeClient(token: String?) -> PowermonClient {
         let config = URLSessionConfiguration.ephemeral

@@ -19,7 +19,7 @@ final class SnapshotDecodingTests: XCTestCase {
         let s = try decode("sample-now")
 
         XCTAssertEqual(s.power.totalW, 104.42, accuracy: 0.01)
-        XCTAssertEqual(s.meta.host, "marzmesas-trainbox")
+        XCTAssertEqual(s.meta.host, "gpu-server")
         XCTAssertFalse(s.busy)
         XCTAssertEqual(s.spark.total.count, 90)
     }

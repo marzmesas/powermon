@@ -654,7 +654,7 @@
     "baseline_w": 35,
     "psu_efficiency": 0.9,
     "interval": 2,
-    "host": "marzmesas-trainbox",
+    "host": "gpu-server",
     "uptime_s": 339245.09,
     "standing_charge_per_day": 0
   }

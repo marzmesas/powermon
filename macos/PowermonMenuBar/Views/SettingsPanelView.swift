@@ -29,7 +29,7 @@ struct SettingsPanelView: View {
             Divider()
 
             field("Server URL") {
-                TextField("http://marzmesas-trainbox:8787", text: $urlDraft)
+                TextField("http://my-server:8787", text: $urlDraft)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11))
                     .onSubmit(commit)

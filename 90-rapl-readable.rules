@@ -2,7 +2,7 @@
 # MEASURED cpu watts instead of estimating them from utilisation.
 #
 # Install:
-#   sudo cp /home/marzmesas/powermon/90-rapl-readable.rules /etc/udev/rules.d/
+#   sudo cp ~/powermon/90-rapl-readable.rules /etc/udev/rules.d/
 #   sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=powercap
 #   systemctl --user restart powermon
 #

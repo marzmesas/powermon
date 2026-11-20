@@ -54,9 +54,10 @@ targets:
     platform: macOS
     sources:
       - path: PowermonMenuBarTests
-        excludes: ["Fixtures"]
+        excludes: ["Fixtures", "**/CLAUDE.md"]
       - path: PowermonMenuBarTests/Fixtures
         buildPhase: resources
+        excludes: ["**/CLAUDE.md"]
     dependencies:
       - target: Powermon
     settings:

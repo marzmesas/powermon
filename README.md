@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="#configuration">Configuration</a> ·
   <a href="#electricity-price">Electricity price</a> ·
   <a href="#alerts">Alerts</a> ·
   <a href="#remote-access">Remote access</a> ·
@@ -24,17 +25,24 @@
 
 ## What you get
 
-- **Watts at the wall, live**, split into GPU, CPU and everything else.
+- **Watts at the wall, live**, split into GPU, CPU and everything else, from
+  real sensors where the host has them.
 - **Real money**: cost per hour, today, this month and projected, at a flat,
-  time-of-day or live market price.
-- **Idle share**: what you paid to leave the machine on while it was not
-  training.
-- **A push to your phone** when the machine burns power with the GPU idle.
-- **Three ways to look**: a web dashboard, `pwr` in the terminal, and a macOS
-  menu bar app.
-- **Nothing to install**: one Python file, standard library only. It uses
-  0.25 % of one core and about 35 MB of RAM, and runs at low priority so it
-  never competes with a training job.
+  time-of-day or live market price; the idle share (what it cost to leave the
+  machine on while not training); CO2 if a grid factor is set.
+- **Cost per training run**, listed on the dashboard, and `pwr run -- <command>`
+  to price any single command.
+- **Alerts** to a phone or a webhook for idle draw with the GPU idle, GPU and
+  CPU temperature, disk usage and a monthly budget.
+- **Sleep when idle**, with a Wake button in the macOS app.
+- **Several machines** in one view, polled from one powermon.
+- **Prometheus, MQTT with Home Assistant discovery, and CSV export.**
+- **A Settings page** for the price, alerts and sleep-when-idle, applied
+  without a restart, and three ways to look: a web dashboard, `pwr` in the
+  terminal, and a macOS menu bar app.
+- **Nothing to install** on the host: one Python file, standard library only
+  (a Docker image is included). It uses 0.25 % of one core and about 35 MB of
+  RAM, and runs at low priority so it never competes with a training job.
 
 ## Quick start
 
@@ -60,7 +68,8 @@ Then:
 
 1. **Open the dashboard** at <http://localhost:8787>, or at the URL the
    installer printed from another device.
-2. **Set your [electricity price](#electricity-price)** in `config.toml`.
+2. **Set your [electricity price](#electricity-price)** under **Settings** in
+   the dashboard header (or in `config.toml`).
 3. **Optionally** turn on [alerts](#alerts) and install the
    [menu bar app](macos/README.md).
 
@@ -82,37 +91,40 @@ environment before `up` to choose the token yourself. Open
 Inside a container, CPU and memory come from the kernel's `/proc`, and CPU power
 is estimated from utilisation unless `/sys/class/powercap` is mounted (see the
 commented lines in `docker-compose.yml`); GPU readings need the NVIDIA runtime.
+GPU and RAPL passthrough are documented but untested on real hardware.
 
 ## Ways to look at it
 
 | Client | What it is |
 |---|---|
 | **Web dashboard** | served by powermon itself; the full view, including history |
-| **`pwr`** | terminal readout: `pwr` (snapshot), `pwr -w` (live), `pwr --json`. For a remote instance set `POWERMON_TOKEN` or pass `--token` |
-| **macOS menu bar app** | wall watts in the menu bar, and a panel with meters, totals and GPU processes. See [`macos/`](macos/README.md) |
+| **`pwr`** | terminal readout: `pwr` (snapshot), `pwr -w` (live), `pwr --json`, `pwr run -- <command>` ([prices one command](#training-runs)). For a remote instance set `POWERMON_TOKEN` or pass `--token` |
+| **macOS menu bar app** | wall watts in the menu bar, and a panel with meters, totals, the run in progress, active alerts and GPU processes. See [`macos/`](macos/README.md) |
 
 The dashboard shows:
 
-- **Hero** — watts at the wall right now, cost per hour, cost if it ran all month.
-- **Meters** — GPU power against its 350 W limit, GPU load / memory, CPU power,
+- **Hero**: watts at the wall right now, cost per hour, cost if it ran all month.
+- **Meters**: GPU power against its power limit, GPU load / memory, CPU power,
   RAM, disk.
-- **Tiles** — today, month to date, projected month, **idle share** (what you
+- **Tiles**: today, month to date, projected month, **idle share** (what you
   paid to leave it powered on and not training), all time.
-- **Charts** — power draw stacked by component, kWh + cost per hour/day,
-  temperatures. 24 h / 7 d / 30 d. Every chart has a table view and a tooltip;
+- **Charts**: power draw stacked by component, kWh + cost per hour/day,
+  temperatures. 24 h / 7 d / 30 d / 90 d. Every chart has a table view and a tooltip;
   arrow keys move the crosshair.
-- **GPU processes** — what's actually on the card.
+- **Training runs**: the latest runs with their energy and cost.
+- **GPU processes**: what is actually on the card.
+- **Alerts and the sleep countdown**, when active.
 
 ## Configuration
 
-The electricity price, the alerts and sleep-when-idle can be set from the
-dashboard: **Settings** in the header. Changes apply at once, without a restart,
-and are saved to `settings.json` next to `config.toml` (`server.settings_file`
-moves it). That file overrides `config.toml` key by key and is the only file the
-page ever writes, so `config.toml` and its comments are left exactly as written.
-A field changed from the page shows a **reset** control, which drops the
-override so the `config.toml` value applies again; deleting `settings.json`
-resets everything.
+The electricity price, the carbon factor, the alerts and sleep-when-idle can be
+set from the dashboard: **Settings** in the header. Changes apply at once,
+without a restart, and are saved to `settings.json` next to `config.toml`
+(`server.settings_file` moves it). That file overrides `config.toml` key by key
+and is the only file the page ever writes, so `config.toml` and its comments are
+left exactly as written. A field changed from the page shows a **reset**
+control, which drops the override so the `config.toml` value applies again;
+deleting `settings.json` resets everything.
 
 Changing settings needs an admin key, or a browser on the machine itself
 (addressed by IP, `localhost` or the machine's name). A `read` key sees the
@@ -123,27 +135,32 @@ Some settings are deliberately file-only, because a web form that could change
 them would be a bigger privilege than "change a price": `suspend.command` (it
 is executed), `tariff.dynamic_url` / `dynamic_json_path` / `dynamic_headers`
 and everything in `[meter]` (the daemon fetches those URLs with those headers),
-`[server]` (access control itself) and `[sampling]`.
-
-Everything else lives in `config.toml`; [`config.example.toml`](config.example.toml)
-documents every key. Restart after editing it:
+`[server]` (access control itself), `[sampling]`, `[peers]` and `[mqtt]`
+(which hold credentials and name hosts to connect to), and the model constants.
+For these, edit `config.toml` and restart:
 
 ```sh
 systemctl --user restart powermon
 ```
 
+[`config.example.toml`](config.example.toml) documents every key.
 `./powermon.py --show-config` prints the effective configuration, overrides
 included, with the token and secret URLs redacted.
 
-| Section | What it controls |
-|---|---|
-| `[tariff]` | what a kWh costs: see [electricity price](#electricity-price) |
-| `[alerts]` | the idle-draw push: see [alerts](#alerts) |
-| `[server]` | address, port, token: see [remote access](#remote-access) |
-| `[meter]` | a real wall meter: see [using a real meter](#using-a-real-meter) |
-| `[power]`, `[cpu]` | the model's constants: see [calibrating](#calibrating-against-reality) |
-| `[sampling]` | interval and how long raw samples are kept |
-| `[activity]` | what counts as "training" rather than idle but powered on |
+| Section | What it controls | Settings page |
+|---|---|---|
+| `[tariff]` | what a kWh costs: see [electricity price](#electricity-price) | yes, except the dynamic URL, path and headers |
+| `[carbon]` | grams of CO2 per kWh: see [carbon](#carbon) | yes |
+| `[alerts]` | idle draw, temperature, disk and budget pushes: see [alerts](#alerts) | yes |
+| `[suspend]` | sleep when idle: see [sleeping when idle](#sleeping-when-idle) | yes, except `command` |
+| `[peers]` | other powermon machines to show: see [several machines](#several-machines) | no |
+| `[mqtt]` | MQTT publishing and Home Assistant discovery: see [Home Assistant and MQTT](#home-assistant-and-mqtt) | no |
+| `[server]` | address, port, token, keys, TLS: see [remote access](#remote-access) | no |
+| `[meter]` | a real wall meter: see [using a real meter](#using-a-real-meter) | no |
+| `[power]`, `[cpu]` | the model's constants: see [calibrating](#calibrating-against-reality) | no |
+| `[gpu]` | `enabled`: set to `false` to ignore GPUs; see [how accurate is it](#how-accurate-is-it) | no |
+| `[sampling]` | interval, how long raw samples are kept, the longest gap still counted: see [storage](#reference) | no |
+| `[activity]` | what counts as "training" rather than idle but powered on: see [training runs](#training-runs) | no |
 
 ## Electricity price
 
@@ -154,6 +171,7 @@ included, with the token and secret URLs redacted.
 | `flat` | one price all day | `rate` |
 | `tou` | fixed prices by time of day | `tou_weekday`, optionally `tou_weekend` and `tou_holidays` |
 | `dynamic` | the price follows the market | `dynamic_source`, and usually `dynamic_surcharge` |
+| `none` | cost is not tracked | nothing |
 
 A dynamic price can come from three places:
 
@@ -167,6 +185,10 @@ A spot price is not what you pay: contracts add grid fees, levies and a margin
 per kWh. Put that sum in `dynamic_surcharge`. `tax_pct` is then added to every
 price in the section, so leave it at 0 if the figures you typed already include
 tax.
+
+`standing_charge_per_day` adds a fixed daily fee, and `dynamic_scale` multiplies
+a source that reports in other units (`0.01` for cents). `rate` is also the
+fallback in `tou` and `dynamic` modes.
 
 Dynamic mode needs outbound HTTP(S). While a price cannot be fetched the daemon
 bills at `rate` and says so in the health banner. Each hour is stored with the
@@ -183,12 +205,34 @@ one powermon measures. Your supplier or grid operator usually publishes an
 average. `0`, the default, reports no CO2 at all, because an unknown factor is
 not a zero.
 
+## Training runs
+
+A run is a continuous busy stretch (see `[activity]`): it starts once the GPU
+has been busy for `run_min_s`, so a blip is not a run, and ends once it has been
+idle for `run_gap_s`, so a pause between epochs does not split it. Each run
+records its start, end, energy, cost at the price in force at the time, peak
+and average draw, and the GPU process seen most often. Intervals where the GPU
+could not be read add no energy. The dashboard lists the latest runs, and
+`/api/runs?format=csv` exports them. A run still open when the daemon stops is
+closed at its last recorded update.
+
+To price a single command, whether or not the GPU is involved:
+
+```sh
+pwr run -- python train.py     # prints duration, kWh and cost afterwards
+```
+
+That figure is the whole machine over the command's wall-clock time, so it
+includes anything else running meanwhile. The command's exit code is passed
+through; if the daemon cannot be reached the command still runs and `pwr` says
+the cost could not be measured.
+
 ## Alerts
 
-All off until you set a limit. Each alert sends one push when it trips and one
-when it clears (back under for 60 s); nothing in between, so a stuck condition
-cannot turn into a stream of notifications. A sensor that cannot be read neither
-trips nor clears an alert.
+All off until you set a limit, from **Settings** or `[alerts]`. Each alert sends
+one push when it trips and one when it clears (back under for 60 s); nothing in
+between, so a stuck condition cannot turn into a stream of notifications. A
+sensor that cannot be read neither trips nor clears an alert.
 
 | Alert | Keys | Trips when |
 |---|---|---|
@@ -220,7 +264,8 @@ Off by default. Set `suspend.after_idle_min` (minutes, `0` = off) and the box
 suspends itself once **all four** of these have held continuously for that long:
 
 1. the GPU is idle,
-2. CPU utilisation is below `suspend.max_cpu_pct` (20), so a CPU-only job counts as work,
+2. CPU utilisation is below `suspend.max_cpu_pct` (20), so a CPU-only job
+   counts as work,
 3. no training run is open,
 4. nobody has an interactive session (no `pts`/`tty` line in `who`; SSH sessions
    count). `suspend.skip_if_logged_in = false` drops this condition.
@@ -245,27 +290,27 @@ The macOS app's Wake button sends a Wake-on-LAN packet to `meta.mac`. That needs
 Wake-on-LAN enabled in firmware and in the OS (`ethtool <iface> | grep Wake-on`
 should show `g`), and works only from the same local network.
 
-## Training runs
+## Several machines
 
-A run is a continuous busy stretch (see `[activity]`): it starts once the GPU
-has been busy for `run_min_s`, so a blip is not a run, and ends once it has been
-idle for `run_gap_s`, so a pause between epochs does not split it. Each run
-records its start, end, energy, cost at the price in force at the time, peak
-and average draw, and the GPU process seen most often. Intervals where the GPU
-could not be read add no energy. The dashboard lists the latest runs, and
-`/api/runs?format=csv` exports them. A run still open when the daemon stops is
-closed at its last recorded update.
+Every machine keeps running its own powermon. One of them can additionally
+list the others and show them together: it polls each peer's `GET /api/now`
+(sending the peer's token in the `X-Powermon-Token` header) and the dashboard
+gains an "All machines" card with a row per machine and a total.
 
-To price a single command, whether or not the GPU is involved:
-
-```sh
-pwr run -- python train.py     # prints duration, kWh and cost afterwards
+```toml
+[peers]
+hosts = "nas=http://nas.lan:8787|abc123, lab=https://lab:8787"
+poll_s = 15      # seconds between polls
+timeout = 4      # per peer; a dead peer delays the others by at most this
 ```
 
-That figure is the whole machine over the command's wall-clock time, so it
-includes anything else running meanwhile. The command's exit code is passed
-through; if the daemon cannot be reached the command still runs and `pwr` says
-the cost could not be measured.
+Each entry is `name=URL`, optionally followed by `|TOKEN` (a read key from the
+peer's `--add-key`). The peer's token is stored in this machine's `config.toml`,
+so keep that file private (`--show-config` redacts it, and the Settings dialog
+cannot change it). A peer that has not answered for three poll intervals shows
+as unreachable with its last figures and how long ago they were read. Costs and
+the cost total are only summed when every reachable machine uses the same
+currency symbol; otherwise they show as unknown rather than a wrong sum.
 
 ## Remote access
 
@@ -336,9 +381,9 @@ systemctl --user restart powermon               # keys load at startup
 
 They are stored hashed in `server.keys_file`, so that file is not itself a
 credential, and the token is shown once because it is never kept. `server.token`
-still works alongside them as a one-key shorthand. Every current route is
-read-only, so `admin` grants nothing extra today — it exists for the first route
-that changes something.
+still works alongside them as a one-key shorthand. A `read` key can read
+everything except the ntfy and webhook URLs; changing settings from the page
+needs an `admin` key (see [Configuration](#configuration)).
 
 Repeated wrong keys from one address are slowed: five free attempts, then a
 delay doubling to 30 s. A correct key is never delayed, even from an address
@@ -391,28 +436,6 @@ required. Without it every proxied request arrives as bare loopback and skips
 the token.
 
 </details>
-
-## Several machines
-
-Every machine keeps running its own powermon. One of them can additionally
-list the others and show them together: it polls each peer's `GET /api/now`
-(sending the peer's token in the `X-Powermon-Token` header) and the dashboard
-gains an "All machines" card with a row per machine and a total.
-
-```toml
-[peers]
-hosts = "nas=http://nas.lan:8787|abc123, lab=https://lab:8787"
-poll_s = 15      # seconds between polls
-timeout = 4      # per peer; a dead peer delays the others by at most this
-```
-
-Each entry is `name=URL`, optionally followed by `|TOKEN` (a read key from the
-peer's `--add-key`). The peer's token is stored in this machine's `config.toml`,
-so keep that file private (`--show-config` redacts it, and the Settings dialog
-cannot change it). A peer that has not answered for three poll intervals shows
-as unreachable with its last figures and how long ago they were read. Costs and
-the cost total are only summed when every reachable machine uses the same
-currency symbol; otherwise they show as unknown rather than a wrong sum.
 
 ## How accurate is it
 
@@ -503,13 +526,13 @@ below gets better:
    `cpu.rapl_scale` (RAPL slightly under-reads socket draw on Zen 2) or
    `power.psu_efficiency`.
 
-`systemctl --user restart powermon` after editing. Past costs are **not**
-retroactively rewritten — each hour stores the tariff it was billed at.
+Restart after editing (`systemctl --user restart powermon`). Past costs are
+**not** retroactively rewritten — each hour stores the tariff it was billed at.
 
 ### Supported hosts
 
-Only the first row has been run on real hardware; the rest is what the code
-paths imply, marked as such rather than claimed.
+Only the rows marked **yes** have been run on real hardware; the rest is what
+the code paths imply, marked as such rather than claimed.
 
 | Host | Wall power | Verified |
 |---|---|---|
@@ -523,12 +546,8 @@ paths imply, marked as such rather than claimed.
 | NVIDIA MIG | reports the physical card; per-instance not attributed | untested, no MIG card to hand |
 | macOS, Windows, *BSD | not supported as a *host* (the menu bar app is a client) | — |
 
-Python 3.10 or newer, standard library only. `nvidia-smi` is optional — NVML is
-used when present and is what the daemon prefers.
-
-Without a `[meter]`, the wall figure is an **estimate**: the GPU and CPU terms
-are real sensors, but `baseline_w` and `psu_efficiency` are configured
-constants. On a host with no GPU and no readable RAPL, every term is modelled.
+`nvidia-smi` is optional: NVML is used when present and is what the daemon
+prefers. On a host with no GPU and no readable RAPL, every term is modelled.
 
 ## API
 
@@ -555,7 +574,8 @@ scrape_configs:
       - targets: ["127.0.0.1:8787"]
 ```
 
-Useful for logging a run's energy cost from a training script:
+To log a run's energy cost from a training script, or use
+[`pwr run`](#training-runs):
 
 ```python
 import urllib.request, json
@@ -571,7 +591,8 @@ def kwh():
 
 ### Home Assistant and MQTT
 
-powermon can publish its readings to an MQTT broker, so Home Assistant (or anything else on the broker) can use them. It is off until `host` is set:
+powermon can publish its readings to an MQTT broker, so Home Assistant (or
+anything else on the broker) can use them. It is off until `host` is set:
 
 ```toml
 [mqtt]
@@ -587,13 +608,30 @@ interval_s = 30
 
 Topics, with `<host>` the hostname reduced to `A-Za-z0-9_-`:
 
-- `<topic>/<host>/availability`: `online` (retained); the broker sets `offline` if powermon disappears.
-- `<topic>/<host>/state`: one JSON object every `interval_s`, not retained. A value that is unknown (a GPU that cannot be read, say) is left out, so Home Assistant shows "unknown" instead of 0.
-- `<discovery_prefix>/sensor/<host>/<name>/config` (and `binary_sensor` for busy and alert): retained discovery documents, sent each time powermon connects.
+- `<topic>/<host>/availability`: `online` (retained); the broker sets `offline`
+  if powermon disappears.
+- `<topic>/<host>/state`: one JSON object every `interval_s`, not retained. A
+  value that is unknown (a GPU that cannot be read, say) is left out, so Home
+  Assistant shows "unknown" instead of 0.
+- `<discovery_prefix>/sensor/<host>/<name>/config` (and `binary_sensor` for busy
+  and alert): retained discovery documents, sent each time powermon connects.
 
-Home Assistant then lists one device, "powermon `<host>`", with sensors for power, CPU and GPU power, energy, total cost, cost per hour, cost today and this month, CPU and GPU temperature and GPU utilisation, plus busy and alert. Add the **Energy** sensor (kWh, all-time total) to the Energy dashboard as the consumption source. The currency of the cost sensors is read when powermon connects, so restart it after changing the tariff currency.
+Home Assistant then lists one device, "powermon `<host>`", with sensors for
+power, CPU and GPU power, energy, total cost, cost per hour, cost today and this
+month, CPU and GPU temperature and GPU utilisation, plus busy and alert. Add the
+**Energy** sensor (kWh, all-time total) to the Energy dashboard as the
+consumption source. The currency of the cost sensors is read when powermon
+connects, so restart it after changing the tariff currency.
 
-This section is not editable from the Settings dialog, and `--show-config` hides the password. If the broker is down, powermon retries in the background (5 s, doubling to 5 min) and `/api/now` `health` carries a `mqtt_disconnected` warning meanwhile. There is no QoS 1/2 and no subscribing. This has been tested against a simulated broker only, not a real one or a real Home Assistant.
+This section is not editable from the Settings dialog, and `--show-config`
+hides the password. If the broker is down, powermon retries in the background
+(5 s, doubling to 5 min) and `/api/now` `health` carries a `mqtt_disconnected`
+warning meanwhile. There is no QoS 1/2 and no subscribing.
+
+Verification: this has been run against a real Mosquitto 2 broker (connect,
+retained availability and discovery documents, state messages, disconnect). It
+has **not** been tried against a Home Assistant instance, and the TLS path was
+not run.
 
 ## Reference
 
@@ -651,22 +689,26 @@ service, and systemd restarts the process if it ever does die.
 <details>
 <summary><b>Files in this repository</b></summary>
 
-| File | |
+| File | Purpose |
 |---|---|
-| `powermon.py` | sampler + HTTP API + static server — standard library only, no pip installs (running on system `/usr/bin/python3` 3.10, so conda envs can't break it) |
-| `dashboard.html` | the UI, self-contained, no external requests |
-| `pwr` | terminal client (symlinked into `~/.local/bin`) |
-| `config.toml` | all settings |
+| `powermon.py` | sampler, HTTP API and static server; standard library only, no pip installs, runs on the system `python3` so conda environments cannot break it |
+| `dashboard.html` | the web UI, self-contained, no external requests |
+| `pwr` | terminal client (symlinked into `~/.local/bin` by the installer) |
+| `config.example.toml` | every setting with comments; the installer copies it to `config.toml`, which is not in the repository |
 | `90-rapl-readable.rules` | optional udev rule for measured CPU power |
-| `tests/` | regression tests — `python3 -m unittest discover -s tests`, standard library only |
+| `install.sh` | sets everything up as a systemd user service |
+| `systemd/` | `powermon.service`, the unit installed to `~/.config/systemd/user/` |
+| `Dockerfile` | container image: `python:3.12-slim`, no pip installs |
+| `docker-compose.yml` | one-service compose setup with a data volume, see [Docker](#docker) |
+| `docker-entrypoint.sh` | writes `config.toml` and a token into the volume on the container's first start |
+| `dev.py` | serves the local `dashboard.html` against a running powermon and reloads on save, for working on the UI |
+| `macos/` | the macOS menu bar app, see [`macos/README.md`](macos/README.md) |
+| `tests/` | regression tests: `python3 -m unittest discover -s tests`, standard library only |
+| `docs/` | screenshot, menu bar app spec, roadmap and product audit |
+| `README.md` | this file |
 | `CHANGELOG.md` | what changed per release |
 | `CONTRIBUTING.md` | how to run the tests, and the two constraints to know first |
 | `LICENSE` | MIT |
-| `dev.py` | serves the local `dashboard.html` against a running powermon and reloads on save, for working on the UI |
-| `install.sh` | sets all of this up as a systemd user service |
-| `Dockerfile` | container image: `python:3.12-slim`, no pip installs |
-| `docker-compose.yml` | one-service compose setup with a data volume, see [Docker](#docker) |
-| `systemd/powermon.service` | unit, installed to `~/.config/systemd/user/` |
 
 </details>
 

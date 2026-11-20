@@ -33,6 +33,18 @@ The app starts with no configuration. Open **Settings** (⌘,) from the panel an
 **Test connection** reports which of the three outcomes you got: connected,
 token rejected, or unreachable.
 
+## What the panel shows
+
+- Wall watts in the menu bar, with the icon tinted blue while training, yellow
+  while an alert is active and red when the server is unreachable.
+- Meters, totals (including **Idle this month**, the cost of leaving the machine
+  on while not training), sparklines and GPU processes.
+- The run in progress: its duration, energy, cost and process name.
+- Every active alert, not only the idle-draw one.
+- A notification when the idle-draw alert starts and when it clears, on by
+  default; **Notify me about alerts** in Settings turns it off.
+- A **Wake** button when the server is unreachable (see below).
+
 ## Waking a sleeping server
 
 When the server is unreachable and the app has seen its MAC address before

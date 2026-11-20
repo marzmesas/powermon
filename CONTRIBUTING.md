@@ -3,7 +3,7 @@
 ## Running the tests
 
 ```sh
-python3 -m unittest discover -s tests        # daemon, ~140 tests, no dependencies
+python3 -m unittest discover -s tests        # daemon, ~270 tests, no dependencies
 cd macos && xcodegen generate && \
   xcodebuild -project PowermonMenuBar.xcodeproj -scheme Powermon test
 ```

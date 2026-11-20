@@ -67,6 +67,22 @@ Then:
 It works without a GPU (the GPU panels hide themselves) and without readable
 CPU energy counters (CPU power is then estimated).
 
+### Docker
+
+```sh
+docker compose up -d
+```
+
+On first start the container writes `config.toml` into the `powermon-data`
+volume and prints a generated token to the log: `docker compose logs powermon`
+shows `powermon: generated access token: ...`. Set `POWERMON_TOKEN` in the
+environment before `up` to choose the token yourself. Open
+`http://localhost:8787/?token=YOUR_TOKEN` once to set the cookie.
+
+Inside a container, CPU and memory come from the kernel's `/proc`, and CPU power
+is estimated from utilisation unless `/sys/class/powercap` is mounted (see the
+commented lines in `docker-compose.yml`); GPU readings need the NVIDIA runtime.
+
 ## Ways to look at it
 
 | Client | What it is |
@@ -150,6 +166,28 @@ icon turns yellow.
 ```sh
 curl -d "powermon test" https://ntfy.sh/<your-topic>     # check delivery
 ```
+
+## Training runs
+
+A run is a continuous busy stretch (see `[activity]`): it starts once the GPU
+has been busy for `run_min_s`, so a blip is not a run, and ends once it has been
+idle for `run_gap_s`, so a pause between epochs does not split it. Each run
+records its start, end, energy, cost at the price in force at the time, peak
+and average draw, and the GPU process seen most often. Intervals where the GPU
+could not be read add no energy. The dashboard lists the latest runs, and
+`/api/runs?format=csv` exports them. A run still open when the daemon stops is
+closed at its last recorded update.
+
+To price a single command, whether or not the GPU is involved:
+
+```sh
+pwr run -- python train.py     # prints duration, kWh and cost afterwards
+```
+
+That figure is the whole machine over the command's wall-clock time, so it
+includes anything else running meanwhile. The command's exit code is passed
+through; if the daemon cannot be reached the command still runs and `pwr` says
+the cost could not be measured.
 
 ## Remote access
 
@@ -396,6 +434,7 @@ constants. On a host with no GPU and no readable RAPL, every term is modelled.
 | Endpoint | Returns |
 |---|---|
 | `GET /api/now` | current sample, period totals, 3-minute sparklines, metadata. `gpu.*` is the host aggregate across every card; `gpu.devices[]` carries each one separately |
+| `GET /api/runs?limit=50` (`&format=csv` for CSV) | training runs, newest first: `id`, `start`, `end` (null while running), `seconds`, `kwh`, `cost`, `peak_w`, `avg_w`, `name`, `running`. `/api/now` also carries the open one as `run` |
 | `GET /api/history?range=24h\|7d\|30d\|90d` | time series (24 h = 5-min averages from raw samples; longer = hourly totals) |
 | `GET /healthz` | the same `health` block as `/api/now`: `ok`, `last_sample_age_s`, `coverage_today`, the live CPU/GPU sources, and an `issues` list at `error` / `warn` / `info` |
 
@@ -482,6 +521,8 @@ service, and systemd restarts the process if it ever does die.
 | `LICENSE` | MIT |
 | `dev.py` | serves the local `dashboard.html` against a running powermon and reloads on save, for working on the UI |
 | `install.sh` | sets all of this up as a systemd user service |
+| `Dockerfile` | container image: `python:3.12-slim`, no pip installs |
+| `docker-compose.yml` | one-service compose setup with a data volume, see [Docker](#docker) |
 | `systemd/powermon.service` | unit, installed to `~/.config/systemd/user/` |
 
 </details>

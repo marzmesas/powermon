@@ -6,6 +6,12 @@ still change shape between minor versions.
 
 ## Unreleased
 
+- **Cost per training run.** Each continuous busy stretch is recorded as a run
+  with its energy, cost, peak and average draw and the busiest GPU process
+  (`activity.run_min_s`, `activity.run_gap_s`). New `/api/runs` (JSON or
+  `?format=csv`), `run` in `/api/now`, a "Training runs" card on the dashboard,
+  and `pwr run -- <command>` to price a single command.
+
 - **Installer.** `install.sh` sets up the config, an access token, the systemd
   user service and `pwr` in one command, and prints the URL to connect to.
 - **Time-of-day and dynamic tariffs.** `tariff.mode` gains `tou` (fixed prices
@@ -20,6 +26,11 @@ still change shape between minor versions.
   Off by default.
 - The menu bar app has a mascot for an icon and shows it in the menu bar, tinted
   with the connection state, and yellow while an alert is active.
+- The menu bar app posts a macOS notification when the idle-draw alert is raised
+  and another when it clears. A "Notify me about alerts" setting turns it off.
+- **Docker.** A `Dockerfile` and `docker-compose.yml` run powermon in a container.
+  The entrypoint writes a config on first start, with a token from `POWERMON_TOKEN`
+  or a generated one printed to the log; an existing config is never modified.
 
 ## 0.1.0 — 2026-09-07
 

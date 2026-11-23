@@ -155,6 +155,7 @@ included, with the token and secret URLs redacted.
 | `[suspend]` | sleep when idle: see [sleeping when idle](#sleeping-when-idle) | yes, except `command` |
 | `[peers]` | other powermon machines to show: see [several machines](#several-machines) | no |
 | `[mqtt]` | MQTT publishing and Home Assistant discovery: see [Home Assistant and MQTT](#home-assistant-and-mqtt) | no |
+| `[llm]` | the model that reads prices from a contract: see [from your contract](#from-your-contract) | no |
 | `[server]` | address, port, token, keys, TLS: see [remote access](#remote-access) | no |
 | `[meter]` | a real wall meter: see [using a real meter](#using-a-real-meter) | no |
 | `[power]`, `[cpu]` | the model's constants: see [calibrating](#calibrating-against-reality) | no |
@@ -194,6 +195,55 @@ Dynamic mode needs outbound HTTP(S). While a price cannot be fetched the daemon
 bills at `rate` and says so in the health banner. Each hour is stored with the
 price it was billed at, so changing the tariff changes what you pay from then
 on, never what a past hour cost.
+
+### From your contract
+
+The Settings page (Price tab, "Read it from your contract") can fill in the
+price from your electricity contract, using a language model you configure.
+It works in three steps, and each one stops so you can check it:
+
+1. **Text, on this machine.** You pick the PDF. powermon pulls the text out
+   locally (`pdftotext` from poppler-utils, or the `pypdf` module if that is
+   installed instead), removes what it recognises as personal data, and
+   shows you the result. The PDF is not stored and is never sent anywhere. A
+   scanned PDF has no text to pull out: paste the price section instead.
+2. **Analysis, by your model.** When you press Analyse, the text in the box,
+   exactly as you left it after any edits, is sent to the endpoint in `[llm]`.
+   Nothing else is sent. The model is asked for the figures as written, each
+   with the words it took them from. powermon then does the arithmetic itself
+   (cents to whole units, per month to per day, VAT). It drops any figure
+   whose quoted words are not in your text, and any figure outside a
+   plausible range.
+3. **You save.** The figures are filled into the form and listed with their
+   quotes. Nothing changes until you check them and press Save.
+
+Redaction replaces IBANs, BICs that are labelled as such, e-mail addresses,
+phone numbers and long digit runs (customer, contract and meter numbers) with
+`[IBAN]`, `[EMAIL]`, `[PHONE]` and `[NUMBER]`. Prices, percentages, dates and
+times are kept. **Names and postal addresses are not removed**, because no
+pattern can tell them from other words, so delete them in the preview before
+pressing Analyse.
+
+Free hosted models may keep what they receive, or train on it. A model
+running on your own network is the private choice. Any OpenAI-compatible
+chat-completions endpoint works. These `base_url` values are only examples;
+take the model id from the provider's own catalogue:
+
+```toml
+[llm]
+base_url = "https://integrate.api.nvidia.com/v1"   # NVIDIA
+# base_url = "https://openrouter.ai/api/v1"        # OpenRouter
+# base_url = "http://127.0.0.1:11434/v1"           # Ollama on this machine
+api_key = ""       # empty for local servers that need none
+model = ""         # the provider's model id
+timeout = 60.0
+```
+
+`[llm]` can only be set in `config.toml`, never from the web, because it
+holds a key and names a host the daemon sends data to. `--show-config` hides
+the key. An admin key is needed to use the feature, and powermon runs one
+analysis at a time and at most six a minute, because each one may use up the
+operator's quota. The Docker image includes poppler-utils.
 
 ### Carbon
 
@@ -561,6 +611,9 @@ prefers. On a host with no GPU and no readable RAPL, every term is modelled.
 | `GET /api/settings` | the settings the dashboard can change: `{"values": {section: {key: value}}, "overridden": ["tariff.rate", …], "editable": bool, "redacted": [...]}`. A `read` key gets the ntfy and webhook URLs as `""`, listed in `redacted` |
 | `POST /api/settings` | partial update, e.g. `{"tariff": {"rate": 0.31}}`. Admin only; requires `Content-Type: application/json` and `X-Powermon-Write: 1`, and refuses a cross-origin `Origin`. The whole resulting configuration is validated before anything is saved; errors are `400 {"error": "..."}` naming the key. Returns the new `GET` payload |
 | `DELETE /api/settings?key=tariff.rate` | drops one override so the `config.toml` value applies again. Same rules as `POST` |
+| `GET /api/settings` → `contract` | for an admin, whether the [contract reader](#from-your-contract) can run: `{"llm": bool, "host", "model", "local": bool, "pdf": "pdftotext"\|"pypdf"\|null}`; `null` for a `read` key |
+| `POST /api/contract/text` | body: the PDF (`Content-Type: application/pdf`, up to 10 MiB). Returns the redacted text, extracted on this machine: `{"text", "chars" (before the 60,000-character cut), "truncated", "redactions": {"iban", "bic", "email", "phone", "number"}, "extractor"}`. `422` when there is no text layer or no extractor. Same guards as `POST /api/settings` |
+| `POST /api/contract/analyse` | body: `{"text": "..."}` (up to 60,000 characters). Sends the text to the `[llm]` endpoint and returns a proposal that is not saved: `{"proposal": {"tariff": {...}}, "evidence": [{"key", "value", "from", "quote"}], "warnings", "model", "host"}`. `409` when no model is configured, `429` while another analysis runs or after six in a minute, `502`/`504` when the model fails. Same guards as `POST /api/settings` |
 | `GET /metrics` | the figures from `/api/now` in Prometheus text format. Needs the token like `/api/*`, except from loopback (see below) |
 
 Prometheus cannot send custom headers, so this documents scraping from the same

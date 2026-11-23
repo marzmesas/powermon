@@ -371,6 +371,22 @@
   .bill summary { cursor: pointer; font: 600 11.5px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
   .bill[open] summary { margin-bottom: 10px; }
   .bill .fields { margin-bottom: 8px; }
+  .bill textarea {
+    font: 12px/1.45 var(--mono); color: var(--ink); background: var(--panel-2); width: 100%;
+    border: 1px solid var(--rule-strong); border-radius: var(--r-sm); padding: 8px 10px; resize: vertical;
+  }
+  .bill textarea:focus-visible, .bill input[type=file]:focus-visible { outline: 2px solid var(--power); outline-offset: 0; border-color: var(--power); }
+  .bill textarea:disabled, .bill input:disabled, .bill button:disabled { opacity: .6; cursor: not-allowed; }
+  .ct-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 0 10px; }
+  .ct-row input[type=file] { flex: 1 1 220px; width: auto; padding: 5px 8px; }
+  .ct-snip { font: 12px/1.5 var(--mono); background: var(--panel-2); border: 1px solid var(--rule);
+             border-radius: var(--r-sm); padding: 8px 10px; margin: 6px 0 10px; overflow-x: auto; }
+  #ct-err { color: var(--crit); margin: 8px 0 0; }
+  #ct-err:empty, #ct-warn:empty, #ct-evidence:empty { display: none; }
+  #ct-warn { color: var(--warn); margin: 8px 0 0; padding-left: 18px; }
+  #ct-evidence { margin: 8px 0 0; padding-left: 18px; }
+  #ct-evidence li { margin-bottom: 4px; }
+  #ct-evidence q { color: var(--ink-3); font-style: italic; }
   .set-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 18px;
                  padding-top: 14px; border-top: 1px solid var(--rule); }
   #set-err { color: var(--crit); font-size: var(--fs-sm); }
@@ -446,6 +462,32 @@
         <div class="field" data-modes="flat tou dynamic"><span class="lrow"><label for="f-rate">Price per kWh</label></span>
           <input id="f-rate" type="number" step="any" min="0" data-key="tariff.rate">
           <span class="hint" id="f-rate-hint">What one kWh costs.</span></div>
+        <details class="bill" id="contract" hidden>
+          <summary>Read it from your contract</summary>
+          <div id="ct-off" hidden>
+            <p class="hint">A language model can read the prices out of your contract, but none is set up on this machine.
+              Add this to config.toml with your provider's values and restart powermon:</p>
+            <pre class="ct-snip">[llm]
+base_url = "https://provider.example/v1"
+api_key = "..."
+model = "model-id"</pre>
+          </div>
+          <p class="hint">The PDF is read on this machine and never sent anywhere. You see the text, and decide what goes to the model.</p>
+          <div class="ct-row">
+            <label class="sr-only" for="ct-file">Contract PDF</label>
+            <input id="ct-file" type="file" accept="application/pdf">
+            <button type="button" id="ct-extract">Extract text</button>
+          </div>
+          <p class="hint" id="ct-nopdf" hidden>This machine cannot read PDFs (no pdftotext): paste the price section below instead.</p>
+          <div class="field"><span class="lrow"><label for="ct-text">Contract text &mdash; or paste the price section here</label></span>
+            <textarea id="ct-text" rows="8" spellcheck="false"></textarea></div>
+          <p class="hint" id="ct-removed" aria-live="polite"></p>
+          <p class="hint" id="ct-where"></p>
+          <button type="button" id="ct-analyse">Analyse</button> <span id="ct-status" class="hint" aria-live="polite"></span>
+          <p id="ct-err" role="alert"></p>
+          <ul id="ct-warn"></ul>
+          <ul id="ct-evidence" aria-label="Where each figure came from"></ul>
+        </details>
         <details class="bill" data-modes="flat tou dynamic">
           <summary>Work it out from a bill</summary>
           <div class="fields">
@@ -470,6 +512,8 @@
           <span class="hint">Your supplier or grid operator publishes this. 0 = do not show CO2.</span></div>
         <div class="field"><span class="lrow"><label for="f-symbol">Currency symbol</label></span>
           <input id="f-symbol" type="text" maxlength="8" data-key="tariff.symbol"></div>
+        <div class="field"><span class="lrow"><label for="f-currency">Currency code</label></span>
+          <input id="f-currency" type="text" maxlength="8" data-key="tariff.currency" placeholder="EUR"></div>
         <div class="field" data-modes="tou"><span class="lrow"><label for="f-tou-wd">Weekday prices</label></span>
           <input id="f-tou-wd" type="text" data-key="tariff.tou_weekday" placeholder="0-8=0.09, 8-24=0.16">
           <span class="hint">hours=price, comma separated.</span></div>
@@ -1748,6 +1792,7 @@ function fillSettings(p) {
   setReadOnly(p.editable ? null : (p.redacted && p.redacted.length
     ? "Read-only: this key cannot change settings (it needs admin scope)."
     : "Read-only: changing settings from the web is turned off on the server."));
+  contractSetup(p.contract);
   noteIdleThreshold(p);
 }
 
@@ -1843,6 +1888,94 @@ $("bill-fill").addEventListener("click", () => {
   }
   $("bill-out").textContent = done.length ? "Filled in " + done.join(" and ") + ". Save to apply."
     : "Enter the kWh and the charge for them.";
+});
+
+/* Read it from your contract. Step 1 turns the PDF into redacted text on the
+   server; the person edits it; step 2 sends only that text to the configured
+   model and fills the form with what comes back. Nothing is saved here: the
+   proposal waits in the inputs for Save. Contract is null for a read-only key
+   and absent on an older daemon, and then the block stays hidden. */
+let CONTRACT = null;
+const CT_TEXT_MAX = 60000;
+function contractSetup(c) {
+  CONTRACT = c || null;
+  $("contract").hidden = !c;
+  if (!c) return;
+  $("ct-off").hidden = c.llm;
+  $("ct-text").disabled = $("ct-analyse").disabled = !c.llm;
+  $("ct-file").disabled = $("ct-extract").disabled = !c.llm || !c.pdf;
+  $("ct-nopdf").hidden = !c.llm || !!c.pdf;
+  $("ct-where").textContent = !c.llm ? ""
+    : c.local ? `Pressing Analyse sends this text to the model on this network (${c.host}). Delete anything you do not want to share.`
+    : `Pressing Analyse sends this text to ${c.host} (model ${c.model}). Delete anything you do not want to share.`;
+}
+function ctClear() {
+  ["ct-err", "ct-status", "ct-warn", "ct-evidence"].forEach((id) => { $(id).textContent = ""; });
+}
+async function ctPost(path, body, ctype) {
+  // Same two headers as a settings write: they force a CORS preflight.
+  const r = await fetch(path, { method: "POST", cache: "no-store", body,
+    headers: { "Content-Type": ctype, "X-Powermon-Write": "1" } });
+  const p = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(p.error || `The server returned HTTP ${r.status}.`);
+  return p;
+}
+async function ctBusy(button, label, work) {
+  ctClear();
+  button.disabled = true;
+  $("ct-status").textContent = label;
+  try { await work(); }
+  catch (e) { $("ct-err").textContent = e instanceof TypeError ? "Cannot reach powermon." : e.message; }
+  finally { button.disabled = false; if ($("ct-status").textContent === label) $("ct-status").textContent = ""; }
+}
+const CT_NAMES = { iban: ["IBAN", "IBANs"], bic: ["BIC", "BICs"], email: ["e-mail address", "e-mail addresses"],
+                   phone: ["phone number", "phone numbers"], number: ["long number", "long numbers"] };
+$("ct-extract").addEventListener("click", () => {
+  const file = $("ct-file").files[0];
+  if (!file) { ctClear(); $("ct-err").textContent = "Choose a PDF first."; return; }
+  if (file.size > 10 * 1024 * 1024) { ctClear(); $("ct-err").textContent = "That PDF is larger than 10 MB."; return; }
+  ctBusy($("ct-extract"), "Reading the PDF…", async () => {
+    const p = await ctPost("api/contract/text", file, "application/pdf");
+    $("ct-text").value = p.text;
+    const gone = Object.entries(p.redactions || {}).filter(([, n]) => n > 0)
+      .map(([k, n]) => `${n} ${(CT_NAMES[k] || [k, k])[n === 1 ? 0 : 1]}`);
+    $("ct-removed").textContent = (gone.length ? `Removed ${gone.join(", ")}.` : "Nothing was recognised as personal data.")
+      + " Names and postal addresses are not removed: delete them above."
+      + (p.truncated ? ` Only the first ${CT_TEXT_MAX.toLocaleString()} characters are kept.` : "");
+  });
+});
+$("ct-analyse").addEventListener("click", () => {
+  const text = $("ct-text").value.trim();
+  if (!text) { ctClear(); $("ct-err").textContent = "Extract the text from a PDF, or paste it, first."; return; }
+  if (text.length > CT_TEXT_MAX) { ctClear(); $("ct-err").textContent = `The text is longer than ${CT_TEXT_MAX.toLocaleString()} characters: keep the price section.`; return; }
+  ctBusy($("ct-analyse"), "Asking the model… this can take a minute.", async () => {
+    const p = await ctPost("api/contract/analyse", JSON.stringify({ text }), "application/json");
+    const proposed = (p.proposal && p.proposal.tariff) || {};
+    const labelOf = (key) => {
+      const inp = document.querySelector(`#set-form [data-key="${key}"]`);
+      const lab = inp && document.querySelector(`label[for="${inp.id}"]`);
+      return lab ? lab.textContent : key;
+    };
+    let filled = 0;
+    for (const [k, v] of Object.entries(proposed)) {
+      const inp = document.querySelector(`#set-form [data-key="tariff.${k}"]`);
+      if (!inp) continue;
+      inp.value = String(v);
+      filled++;
+    }
+    showMode();
+    (p.warnings || []).forEach((w) => hel("li", "", $("ct-warn"), w));
+    (p.evidence || []).forEach((e) => {
+      const li = hel("li", "", $("ct-evidence"));
+      hel("strong", "", li, labelOf(e.key) + ": ");
+      hel("span", "num", li, String(e.value));
+      li.append(` from ${e.from}, `);
+      hel("q", "", li, e.quote);
+    });
+    $("ct-status").textContent = filled
+      ? `Filled in ${filled} field${filled === 1 ? "" : "s"} from ${p.model}. Check each figure against your contract, then press Save. Nothing is saved until you do.`
+      : "Nothing was filled in.";
+  });
 });
 
 /* ---------------------------------------------------------------- controls */

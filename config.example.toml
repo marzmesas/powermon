@@ -203,3 +203,17 @@ month_budget = 0           # this month's cost so far, in the tariff currency; o
 # hosts = "nas=http://nas.lan:8787|abc123, lab=https://lab:8787"
 # poll_s = 15
 # timeout = 4
+
+# A language model that reads the price out of a contract PDF from the
+# Settings page (README: "From your contract"). Any OpenAI-compatible
+# chat-completions endpoint. The PDF stays here; only the redacted text you
+# review is sent. Empty base_url or model = off. File-only: holds a key.
+# Example base URLs (take the model id from the provider's catalogue):
+#   https://integrate.api.nvidia.com/v1    NVIDIA
+#   https://openrouter.ai/api/v1           OpenRouter
+#   http://127.0.0.1:11434/v1              Ollama on this machine (no key; most private)
+# [llm]
+# base_url = ""
+# api_key = ""
+# model = ""
+# timeout = 60.0

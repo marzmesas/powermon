@@ -4,6 +4,18 @@ Notable changes per release. Dates are the release date; the project follows
 [semantic versioning](https://semver.org), with 0.x meaning the JSON API may
 still change shape between minor versions.
 
+## Unreleased
+
+- **Price from a contract.** The Settings page can read the price out of a
+  contract PDF. The text is extracted and redacted on the machine
+  (`POST /api/contract/text`, using `pdftotext` or optional `pypdf`). The
+  person reviews it, and only that text goes to an OpenAI-compatible model
+  configured in a new file-only `[llm]` section
+  (`POST /api/contract/analyse`). powermon converts the model's raw figures
+  itself, keeps only figures whose quotes appear in the text, and fills in
+  the form without saving. `GET /api/settings` gains `contract` (admins only).
+  The Docker image now includes poppler-utils.
+
 ## 0.2.0 (not yet tagged)
 
 ### Cost and price

@@ -23,3 +23,7 @@ macos/PowermonMenuBar/Resources/Info.plist
 macos/build/
 macos/*.xcworkspace/
 xcuserdata/
+
+# Local secrets (API keys). Never commit.
+.env
+.env.*

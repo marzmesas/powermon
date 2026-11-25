@@ -16,9 +16,10 @@ still change shape between minor versions.
   the form without saving. `GET /api/settings` gains `contract` (admins only).
   The Docker image now includes poppler-utils.
 - **macOS popover restyled to match the dashboard.** Same palette in light and
-  dark, a state chip, a watts dial, the same one-sentence status line, and two
-  collapsible cards (where the watts go, and cost with the idle-this-month
-  figure) that start folded but still show a one-line summary and any warning.
+  dark, a state chip, a watts dial, the same one-sentence status line with a
+  one-line cost summary under it (today, month, projected, idle this month),
+  and a collapsible "where it goes" card that starts folded but still shows a
+  one-line summary and any warning.
   The menu bar icon stays one colour.
 
 ## 0.2.0 (not yet tagged)

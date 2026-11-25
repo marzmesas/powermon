@@ -10,19 +10,24 @@ struct HeroView: View {
     let scaleMax: Double
 
     var body: some View {
-        HStack(spacing: 10) {
-            GaugeView(watts: snapshot.power.totalW, max: scaleMax, accent: accent)
-            VStack(alignment: .leading, spacing: 6) {
-                readout
-                sentence
-                    .font(.system(size: 12))
-                    .foregroundColor(Palette.ink)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                GaugeView(watts: snapshot.power.totalW, max: scaleMax, accent: accent)
+                VStack(alignment: .leading, spacing: 6) {
+                    readout
+                    sentence
+                        .font(.system(size: 12))
+                        .foregroundColor(Palette.ink)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Rectangle().fill(Palette.rule).frame(height: 1)
+            CostLine(totals: snapshot.totals, meta: snapshot.meta)
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             ZStack {

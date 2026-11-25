@@ -5,26 +5,18 @@ struct PopoverView: View {
     @ObservedObject var settings: AppSettings
     @State private var showingSettings = false
     @AppStorage("popover.whereExpanded") private var storedWhere = false
-    @AppStorage("popover.costExpanded") private var storedCost = false
     // Set only by the snapshot tests, so they never write to UserDefaults.
     @State private var forcedWhere: Bool?
-    @State private var forcedCost: Bool?
 
-    init(poller: Poller, settings: AppSettings, expanded: (where: Bool, cost: Bool)? = nil) {
+    init(poller: Poller, settings: AppSettings, expanded: Bool? = nil) {
         self.poller = poller
         self.settings = settings
-        _forcedWhere = State(initialValue: expanded?.where)
-        _forcedCost = State(initialValue: expanded?.cost)
+        _forcedWhere = State(initialValue: expanded)
     }
 
     private var whereExpanded: Binding<Bool> {
         Binding(get: { forcedWhere ?? storedWhere },
                 set: { if forcedWhere != nil { forcedWhere = $0 } else { storedWhere = $0 } })
-    }
-
-    private var costExpanded: Binding<Bool> {
-        Binding(get: { forcedCost ?? storedCost },
-                set: { if forcedCost != nil { forcedCost = $0 } else { storedCost = $0 } })
     }
 
     var body: some View {
@@ -34,7 +26,7 @@ struct PopoverView: View {
                     .frame(width: 336)
             } else {
                 status
-                    .frame(width: 440)
+                    .frame(width: 464)
             }
         }
         .padding(12)
@@ -64,18 +56,21 @@ struct PopoverView: View {
         PopoverState(snapshot: poller.snapshot, connection: poller.state)
     }
 
-    /// One row: who, what state, and the three actions.
+    /// One row: who, what state, and the three actions. The actions and the chip
+    /// keep their width and never wrap; the host name alone gives way.
     private var header: some View {
         HStack(spacing: 8) {
-            WatcherMascot(side: 24)
+            WatcherMascot(side: 24).fixedSize()
             if let snapshot = poller.snapshot {
                 Text(snapshot.meta.host)
-                    .font(.mono(14, .bold))
+                    .font(.mono(13, .bold))
                     .foregroundStyle(Palette.ink)
                     .lineLimit(1)
-                    .truncationMode(.tail)
-                    .help("up \(Format.uptime(snapshot.meta.uptimeS)) · CPU \(snapshot.power.isMeasured ? "measured" : "estimated")")
-                StateChip(state: state)
+                    .truncationMode(.middle)
+                    .layoutPriority(0)
+                    .help("\(snapshot.meta.host) · up \(Format.uptime(snapshot.meta.uptimeS)) · CPU \(snapshot.power.isMeasured ? "measured" : "estimated")")
+                    .accessibilityLabel(snapshot.meta.host)
+                StateChip(state: state).layoutPriority(2)
             }
             Spacer(minLength: 8)
             HStack(spacing: 10) {
@@ -88,6 +83,7 @@ struct PopoverView: View {
                 Button("Quit") { NSApplication.shared.terminate(nil) }
             }
             .buttonStyle(TextButtonStyle())
+            .layoutPriority(2)
         }
     }
 
@@ -123,22 +119,16 @@ struct PopoverView: View {
         let scaleMax = Format.niceMax(above: ([snapshot.power.totalW] + peaks.compactMap { $0 }).max() ?? 0)
 
         let rows = wattRows(snapshot)
-        let totals = TotalsView(totals: snapshot.totals, meta: snapshot.meta)
 
         return VStack(alignment: .leading, spacing: 8) {
             HeroView(snapshot: snapshot, state: state, connection: poller.state, scaleMax: scaleMax)
             CollapsibleCard(title: "Where it goes", isExpanded: whereExpanded) {
                 wattsSummary(rows, snapshot)
             } content: {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     WhereItGoesView(rows: rows, scaleMax: scaleMax)
                     InstrumentStrip(items: instruments(snapshot))
                 }
-            }
-            CollapsibleCard(title: "Cost", isExpanded: costExpanded) {
-                totals.summary.font(.mono(10, .semibold))
-            } content: {
-                totals
             }
         }
     }
@@ -247,6 +237,7 @@ struct StateChip: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(outlined ? Color.clear : fill, in: RoundedRectangle(cornerRadius: 3))
+            .fixedSize()
             .overlay(RoundedRectangle(cornerRadius: 3)
                 .stroke(Palette.power, lineWidth: outlined ? 1.5 : 0))
             .accessibilityLabel("State: \(state.word)")
@@ -274,6 +265,8 @@ struct TextButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
+                .lineLimit(1)
+                .fixedSize()
                 .font(.mono(10, .semibold))
                 .tracking(1)
                 .textCase(.uppercase)

@@ -33,7 +33,7 @@ struct CollapsibleCard<Summary: View, Content: View>: View {
 
             if isExpanded {
                 Rectangle().fill(Palette.rule).frame(height: 1)
-                content.padding(10)
+                content.padding(8)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

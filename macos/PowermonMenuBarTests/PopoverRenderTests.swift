@@ -59,15 +59,15 @@ final class PopoverRenderTests: XCTestCase {
 
         func write(_ name: String, _ poller: Poller, expanded: Bool = false) {
             for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
-                let view = PopoverView(poller: poller, settings: settings, expanded: (expanded, expanded))
+                let view = PopoverView(poller: poller, settings: settings, expanded: expanded)
                 let image = render(view, appearance: appearance, scale: 2)
                 let label = "\(name)-\(mode)"
                 XCTAssertGreaterThan(distinctColours(in: image), 8, "\(label) rendered blank")
                 print("SIZE \(label): \(Int(image.size.width)) x \(Int(image.size.height))")
                 // Collapsed is short; expanded is the most it may grow to. An alert line
                 // or the unreachable banner adds a little more room.
-                let extra: CGFloat = name == "unreachable" ? 80 : name == "idle-alert" ? 40 : 0
-                let ceiling: CGFloat = (expanded ? 440 : 250) + extra
+                let extra: CGFloat = name == "unreachable" || name == "not-authorised" ? 80 : name == "idle-alert" ? 40 : 0
+                let ceiling: CGFloat = (expanded ? 330 : 230) + extra
                 XCTAssertLessThanOrEqual(image.size.height, ceiling, "\(label) is too tall")
                 try? png(from: image).write(to: directory.appendingPathComponent("\(label).png"))
             }
@@ -126,7 +126,42 @@ final class PopoverRenderTests: XCTestCase {
             monthly(&json, idleCost: nil)
         }, label: "no-tariff")
         write("no-tariff", noTariff)
-        write("no-tariff-expanded", noTariff, expanded: true)
+        
+        // The widest chip with a host name far longer than the fixtures': the actions
+        // must not wrap and only the name may truncate.
+        let longHost = try await livePoller(body: payload("sample-now") { json in
+            json["busy"] = true
+            json["ts"] = now
+            var meta = json["meta"] as! [String: Any]
+            meta["host"] = "marzmesas-trainbox-with-a-long-name"
+            json["meta"] = meta
+            monthly(&json, idleCost: 10.41)
+        }, label: "long-host")
+        write("long-host", longHost)
+        write("trainbox", try await livePoller(body: payload("sample-now") { json in
+            json["busy"] = true
+            json["ts"] = now
+            var meta = json["meta"] as! [String: Any]
+            meta["host"] = "marzmesas-trainbox"
+            json["meta"] = meta
+            monthly(&json, idleCost: 10.41)
+        }, label: "trainbox"))
+
+        // "NOT AUTHORISED", the longest chip: the server starts refusing the token.
+        let refused = try await livePoller(body: payload("sample-now") { json in
+            var meta = json["meta"] as! [String: Any]
+            meta["host"] = "marzmesas-trainbox"
+            json["meta"] = meta
+        }, label: "not-authorised")
+        StubURLProtocol.status = 401
+        StubURLProtocol.body = Data(#"{"error": "unauthorized"}"#.utf8)
+        refused.start()
+        let refusedBy = Date().addingTimeInterval(10)
+        while Date() < refusedBy, refused.state != .unauthorized {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        refused.stop()
+        write("not-authorised", refused)
 
         // Unreachable with a remembered MAC: serve once, then fail until it gives up.
         defaults.set("aa:bb:cc:dd:ee:ff", forKey: "mac.stub.invalid")

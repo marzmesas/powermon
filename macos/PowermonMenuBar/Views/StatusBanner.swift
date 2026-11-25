@@ -14,8 +14,8 @@ struct StatusBanner: View {
 
     var body: some View {
         if let message {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Circle()
                         .fill(tint)
                         .frame(width: 6, height: 6)
@@ -23,32 +23,26 @@ struct StatusBanner: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Palette.ink2)
                         .fixedSize(horizontal: false, vertical: true)
-                }
-                if showsActions {
-                    HStack(spacing: 8) {
-                        if case .unauthorized = state {} else {
-                            Button("Retry", action: onRetry)
-                        }
-                        Button("Settings", action: onSettings)
-                    }
-                    .buttonStyle(TextButtonStyle())
-                    .padding(.leading, -3)
-                }
-                if case .unreachable = state, let mac {
-                    HStack(spacing: 8) {
-                        Button("Wake") {
-                            woke = true
-                            Task.detached { await WakeOnLAN.send(mac: mac) }
+                    Spacer(minLength: 8)
+                    if showsActions {
+                        HStack(spacing: 8) {
+                            if case .unauthorized = state {} else {
+                                Button("Retry", action: onRetry)
+                            }
+                            Button("Settings", action: onSettings)
+                            if case .unreachable = state, let mac {
+                                Button("Wake") {
+                                    woke = true
+                                    Task.detached { await WakeOnLAN.send(mac: mac) }
+                                }
+                            }
                         }
                         .buttonStyle(TextButtonStyle())
-                        if woke {
-                            Text("Wake signal sent. It can take a minute.")
-                                .font(.system(size: 11))
-                                .foregroundStyle(Palette.ink2)
-                        }
                     }
-                    .padding(.leading, -3)
-                    Text("Works only on the same local network as the server, not over a VPN.")
+                }
+                if case .unreachable = state, mac != nil {
+                    Text(woke ? "Wake signal sent. It can take a minute. Works only on the same local network as the server, not over a VPN."
+                              : "Wake works only on the same local network as the server, not over a VPN.")
                         .font(.system(size: 10))
                         .foregroundStyle(Palette.ink3)
                 }

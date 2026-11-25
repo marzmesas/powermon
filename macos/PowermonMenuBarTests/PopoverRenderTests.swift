@@ -57,16 +57,24 @@ final class PopoverRenderTests: XCTestCase {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let settings = AppSettings(defaults: defaults)
 
-        func write(_ name: String, _ poller: Poller) {
+        func write(_ name: String, _ poller: Poller, expanded: Bool = false) {
             for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
-                let image = render(PopoverView(poller: poller, settings: settings), appearance: appearance, scale: 2)
-                XCTAssertGreaterThan(distinctColours(in: image), 8, "\(name)/\(mode) rendered blank")
-                try? png(from: image).write(to: directory.appendingPathComponent("\(name)-\(mode).png"))
+                let view = PopoverView(poller: poller, settings: settings, expanded: (expanded, expanded))
+                let image = render(view, appearance: appearance, scale: 2)
+                let label = "\(name)-\(mode)"
+                XCTAssertGreaterThan(distinctColours(in: image), 8, "\(label) rendered blank")
+                print("SIZE \(label): \(Int(image.size.width)) x \(Int(image.size.height))")
+                // Collapsed is short; expanded is the most it may grow to. An alert line
+                // or the unreachable banner adds a little more room.
+                let extra: CGFloat = name == "unreachable" ? 80 : name == "idle-alert" ? 40 : 0
+                let ceiling: CGFloat = (expanded ? 440 : 250) + extra
+                XCTAssertLessThanOrEqual(image.size.height, ceiling, "\(label) is too tall")
+                try? png(from: image).write(to: directory.appendingPathComponent("\(label).png"))
             }
         }
 
         let now = Date().timeIntervalSince1970
-        write("working", try await livePoller(body: payload("sample-now") { json in
+        let working = try await livePoller(body: payload("sample-now") { json in
             json["busy"] = true
             json["power"] = ["total_w": 475.0, "cpu_w": 74.0, "gpu_w": 319.0, "other_w": 82.0,
                              "cost_per_h": 0.1425, "source": "rapl"]
@@ -78,10 +86,20 @@ final class PopoverRenderTests: XCTestCase {
                            "cost": 0.80, "name": "train.py", "running": true]
             json["ts"] = now
             monthly(&json, idleCost: 10.41)
-        }, label: "working"))
+        }, label: "working")
+        write("working", working)
+        write("working-expanded", working, expanded: true)
 
-        write("idle", try await livePoller(body: payload("sample-now") { monthly(&$0, idleCost: 10.41) }, label: "idle"))
+        let idle = try await livePoller(body: payload("sample-now") { json in
+            var gpu = json["gpu"] as! [String: Any]
+            gpu["mem_used"] = 12_000.0   // comfortably under the warn level
+            json["gpu"] = gpu
+            monthly(&json, idleCost: 10.41)
+        }, label: "idle")
+        write("idle", idle)
+        write("idle-expanded", idle, expanded: true)
 
+        // Worst case for the collapsed row: three-digit watts and a problem marker.
         write("idle-alert", try await livePoller(body: payload("sample-now") { json in
             json["power"] = ["total_w": 160.0, "cpu_w": 40.0, "gpu_w": 60.0, "other_w": 60.0,
                              "cost_per_h": 0.024, "source": "estimated"]
@@ -91,14 +109,24 @@ final class PopoverRenderTests: XCTestCase {
             monthly(&json, idleCost: 10.41)
         }, label: "idle-alert"))
 
-        write("no-gpu", try await livePoller(body: payload("gpu-absent") { monthly(&$0, idleCost: 4.2) }, label: "no-gpu"))
+        // sample-now's VRAM is 94 % full: the warning must show on the folded card.
+        write("vram-full", try await livePoller(body: payload("sample-now") { json in
+            json["power"] = ["total_w": 319.0, "cpu_w": 74.0, "gpu_w": 319.0, "other_w": 0.0,
+                             "cost_per_h": 0.05, "source": "rapl"]
+            monthly(&json, idleCost: 10.41)
+        }, label: "vram-full"))
 
-        write("no-tariff", try await livePoller(body: payload("sample-now") { json in
+        let noGPU = try await livePoller(body: payload("gpu-absent") { monthly(&$0, idleCost: 4.2) }, label: "no-gpu")
+        write("no-gpu", noGPU)
+
+        let noTariff = try await livePoller(body: payload("sample-now") { json in
             var meta = json["meta"] as! [String: Any]
             meta["mode"] = "none"
             json["meta"] = meta
             monthly(&json, idleCost: nil)
-        }, label: "no-tariff"))
+        }, label: "no-tariff")
+        write("no-tariff", noTariff)
+        write("no-tariff-expanded", noTariff, expanded: true)
 
         // Unreachable with a remembered MAC: serve once, then fail until it gives up.
         defaults.set("aa:bb:cc:dd:ee:ff", forKey: "mac.stub.invalid")
@@ -114,7 +142,7 @@ final class PopoverRenderTests: XCTestCase {
         down.stop()
         write("unreachable", down)
 
-        let settingsImage = render(SettingsPanelView(settings: settings) {}.padding(12).frame(width: 320)
+        let settingsImage = render(SettingsPanelView(settings: settings) {}.frame(width: 336).padding(12)
             .background(Palette.ground), appearance: .darkAqua, scale: 2)
         try? png(from: settingsImage).write(to: directory.appendingPathComponent("settings-dark.png"))
     }

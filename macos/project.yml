@@ -40,6 +40,8 @@ targets:
       properties:
         CFBundleName: Powermon
         CFBundleDisplayName: Powermon
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: "13.0"
         # No Dock icon, no main window — menu bar only.
         LSUIElement: true

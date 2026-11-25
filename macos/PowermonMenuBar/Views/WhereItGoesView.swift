@@ -15,13 +15,12 @@ struct WhereItGoesView: View {
     let scaleMax: Double
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Where it goes").monoLabel()
+        VStack(alignment: .leading, spacing: 5) {
             ForEach(rows) { row in
                 HStack(spacing: 8) {
                     Text(row.label).monoLabel().frame(width: 28, alignment: .leading)
                     LedBar(fraction: row.watts.map { $0 / scaleMax } ?? 0, color: row.color)
-                        .frame(height: 10)
+                        .frame(height: 9)
                     Text(Format.watts(row.watts))
                         .font(.mono(11, .semibold))
                         .foregroundStyle(Palette.ink)

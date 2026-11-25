@@ -1,52 +1,26 @@
 import SwiftUI
 
-/// Exactly one hero: watts at the wall as a dial and a big number, the cost
-/// rate, and one spoken sentence. The top rule and the gauge take the state's colour.
+/// The hero panel: the dial on the left; the big number, the cost rate and one
+/// spoken sentence beside it. The top rule and the dial take the state's colour.
 struct HeroView: View {
     let snapshot: Snapshot
     let state: PopoverState
     let connection: ConnectionState
-    /// The shared watt scale: the gauge and the "where it goes" bars use it.
+    /// The gauge's maximum, shared with the "where it goes" bars.
     let scaleMax: Double
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                GaugeView(watts: snapshot.power.totalW, max: scaleMax, accent: accent)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 2) {
-                        Text(Format.wattsValue(snapshot.power.totalW))
-                            .font(.system(size: 46, weight: .heavy, design: .monospaced).monospacedDigit())
-                            .tracking(-1)
-                            .foregroundStyle(Palette.ink)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
-                        Text("W")
-                            .font(.mono(14, .bold))
-                            .foregroundStyle(accent)
-                    }
-                    if snapshot.meta.hasTariff {
-                        Text(Format.costPerHour(snapshot.power.costPerH, symbol: snapshot.meta.symbol))
-                            .font(.mono(13, .semibold))
-                            .foregroundStyle(Palette.money)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityElement(children: .combine)
+        HStack(spacing: 10) {
+            GaugeView(watts: snapshot.power.totalW, max: scaleMax, accent: accent)
+            VStack(alignment: .leading, spacing: 6) {
+                readout
+                sentence
+                    .font(.system(size: 12))
+                    .foregroundColor(Palette.ink)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Rectangle().fill(Palette.rule).frame(height: 1)
-            sentence
-                .font(.system(size: 12.5))
-                .foregroundColor(Palette.ink)
-                .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
-            if let run = snapshot.run {
-                Text(Format.run(run, symbol: snapshot.meta.symbol))
-                    .font(.mono(10))
-                    .foregroundStyle(Palette.ink2)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -54,12 +28,33 @@ struct HeroView: View {
             ZStack {
                 Palette.panel
                 RadialGradient(colors: [Palette.heroWash, Palette.heroWash.opacity(0)],
-                               center: .topLeading, startRadius: 0, endRadius: 230)
+                               center: .topLeading, startRadius: 0, endRadius: 240)
             }
         )
         .overlay(alignment: .top) { Rectangle().fill(accent).frame(height: 3) }
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Palette.rule, lineWidth: 1))
+    }
+
+    private var readout: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 2) {
+            Text(Format.wattsValue(snapshot.power.totalW))
+                .font(.system(size: 38, weight: .heavy, design: .monospaced).monospacedDigit())
+                .tracking(-1)
+                .foregroundStyle(Palette.ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+            Text("W")
+                .font(.mono(13, .bold))
+                .foregroundStyle(accent)
+            if snapshot.meta.hasTariff {
+                Text(Format.costPerHour(snapshot.power.costPerH, symbol: snapshot.meta.symbol))
+                    .font(.mono(12, .semibold))
+                    .foregroundStyle(Palette.money)
+                    .padding(.leading, 8)
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var accent: Color {
@@ -104,6 +99,8 @@ struct GaugeView: View {
             Text("\(Int(max))").monoLabel().position(x: 82, y: 80)
         }
         .frame(width: 96, height: 88)
+        .scaleEffect(84.0 / 96)
+        .frame(width: 84, height: 77)
         .animation(.easeOut(duration: 0.4), value: fraction)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Watts at the wall")

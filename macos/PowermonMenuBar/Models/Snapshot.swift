@@ -60,6 +60,9 @@ struct Snapshot: Codable, Sendable, Equatable {
         let source: String
 
         var isMeasured: Bool { source == "rapl" }
+
+        /// What neither the GPU nor the CPU accounts for.
+        var restW: Double { max(0, totalW - cpuW - gpuW) }
     }
 
     struct CPU: Codable, Sendable, Equatable {
@@ -97,6 +100,8 @@ struct Snapshot: Codable, Sendable, Equatable {
     struct Totals: Codable, Sendable, Equatable {
         let today: Period
         let month: Period
+        /// Absent from older servers.
+        let all: Period?
 
         struct Period: Codable, Sendable, Equatable {
             let kwh: Double
@@ -111,6 +116,10 @@ struct Snapshot: Codable, Sendable, Equatable {
             /// Cost while powered on but not working. Present on `month` only,
             /// and only from newer servers.
             let idleCost: Double?
+            /// Energy while powered on but not working, and the highest draw
+            /// seen in the period. Older servers omit them.
+            let idleKwh: Double?
+            let peakW: Double?
         }
     }
 
@@ -128,6 +137,10 @@ struct Snapshot: Codable, Sendable, Equatable {
         let interval: Double
         /// NIC address for Wake-on-LAN. Absent from older servers.
         let mac: String?
+        /// Tariff mode; "none" means the server has no price, so no costs.
+        let mode: String?
+
+        var hasTariff: Bool { mode != "none" }
     }
 }
 

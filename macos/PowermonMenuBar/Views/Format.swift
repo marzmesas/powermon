@@ -11,6 +11,26 @@ enum Format {
         return "\(Int(w.rounded())) W"
     }
 
+    /// The bare number the hero prints large, with no unit.
+    static func wattsValue(_ w: Double) -> String { "\(Int(w.rounded()))" }
+
+    /// Dashboard `fmt.kwh`: two decimals, none from 100 up.
+    static func kwhValue(_ kwh: Double) -> String {
+        String(format: kwh >= 100 ? "%.0f" : "%.2f", kwh)
+    }
+
+    /// Dashboard `cash`: two decimals, none from 100 up.
+    static func cash(_ value: Double, symbol: String) -> String {
+        symbol + String(format: abs(value) >= 100 ? "%.0f" : "%.2f", value)
+    }
+
+    /// A round maximum strictly above `watts`, for a scale people can read:
+    /// steps of 50 to 200, 100 to 600, 200 beyond; never below 100.
+    static func niceMax(above watts: Double) -> Double {
+        let step: Double = watts < 200 ? 50 : watts < 600 ? 100 : 200
+        return max(100, (watts / step).rounded(.down) * step + step)
+    }
+
     static func costPerHour(_ cost: Double?, symbol: String) -> String {
         guard let cost else { return dash }
         return String(format: "%@%.3f/h", symbol, cost)

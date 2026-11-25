@@ -5,21 +5,19 @@ struct ProcessListView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("On the GPU")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Palette.secondary)
+            Text("On the GPU").monoLabel()
 
             ForEach(procs) { proc in
                 HStack {
                     Text(proc.name)
                         .font(.system(size: 11))
-                        .foregroundStyle(Palette.primary)
+                        .foregroundStyle(Palette.ink)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
                     Text(Format.mib(proc.memMib))
-                        .font(.system(size: 11).monospacedDigit())
-                        .foregroundStyle(Palette.secondary)
+                        .font(.mono(10))
+                        .foregroundStyle(Palette.ink2)
                 }
             }
         }

@@ -20,14 +20,14 @@ struct MenuBarLabel: View {
     private var glyph: NSImage {
         switch poller.state {
         case .live:
-            if poller.snapshot?.isAlerting == true { return tinted(Palette.warning) }
+            if poller.snapshot?.isAlerting == true { return tinted(Palette.warn) }
             return poller.snapshot?.busy == true ? tinted(Palette.gpu) : WatcherGlyph.image(color: nil)
         case .stale, .connecting:
             return WatcherGlyph.image(color: nil, opacity: 0.5)
         case .samplerStalled:
-            return tinted(Palette.warning)
+            return tinted(Palette.warn)
         case .unreachable, .unauthorized:
-            return tinted(Palette.critical)
+            return tinted(Palette.crit)
         }
     }
 

@@ -26,23 +26,23 @@ struct SettingsPanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
-            Divider()
+            Rectangle().fill(Palette.rule).frame(height: 1)
 
             field("Server URL") {
                 TextField("http://my-server:8787", text: $urlDraft)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11))
+                    .font(.mono(11))
                     .onSubmit(commit)
             }
             if !urlDraft.isEmpty, parsedURL == nil {
-                note("Needs a full http:// URL with a host.", color: Palette.critical)
+                note("Needs a full http:// URL with a host.", color: Palette.crit)
             }
 
             field("Token") {
                 HStack(spacing: 4) {
                     SecureField("Only needed off-loopback", text: $tokenDraft)
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11))
+                        .font(.mono(11))
                         .onSubmit(commit)
                     // Tokens get pasted, not typed — and this keeps working
                     // even if the panel is awkward about keyboard focus.
@@ -52,13 +52,13 @@ struct SettingsPanelView: View {
                             commit()
                         }
                     }
-                    .font(.system(size: 10))
+                    .font(.mono(10))
                 }
             }
-            note("Stored in your Keychain.", color: Palette.muted)
+            note("Stored in your Keychain.", color: Palette.ink3)
 
             testRow
-            Divider()
+            Rectangle().fill(Palette.rule).frame(height: 1)
 
             pickerRow("Menu bar") {
                 Picker("", selection: $settings.format) {
@@ -74,17 +74,17 @@ struct SettingsPanelView: View {
             }
 
             Toggle("Notify me about alerts", isOn: $settings.notifyOnAlert)
-                .font(.system(size: 11))
+                .font(.mono(11))
                 .toggleStyle(.switch)
                 .controlSize(.mini)
 
             Toggle("Launch at login", isOn: $launchAtLogin)
-                .font(.system(size: 11))
+                .font(.mono(11))
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .onChange(of: launchAtLogin) { setLaunchAtLogin($0) }
             if let launchError {
-                note(launchError, color: Palette.critical)
+                note(launchError, color: Palette.crit)
             }
         }
         .onAppear {
@@ -106,33 +106,32 @@ struct SettingsPanelView: View {
                     Image(systemName: "chevron.left")
                     Text("Back")
                 }
-                .font(.system(size: 11))
+                .font(.mono(11))
             }
-            .buttonStyle(.link)
+            .buttonStyle(TextButtonStyle())
             .keyboardShortcut(.escape, modifiers: [])
 
             Spacer()
             Text("Settings")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Palette.primary)
+                .font(.mono(13, .bold))
+                .foregroundStyle(Palette.ink)
             Spacer()
             // Balances the back button so the title sits centred.
-            Text("Back").font(.system(size: 11)).opacity(0)
+            Text("Back").font(.mono(11)).opacity(0)
         }
     }
 
     private func field(_ label: String, @ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Palette.secondary)
+                .monoLabel()
             content()
         }
     }
 
     private func note(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.system(size: 10))
+            .font(.mono(10))
             .foregroundStyle(color)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -140,12 +139,12 @@ struct SettingsPanelView: View {
     private func pickerRow(_ label: String, @ViewBuilder content: () -> some View) -> some View {
         HStack {
             Text(label)
-                .font(.system(size: 11))
-                .foregroundStyle(Palette.secondary)
+                .font(.mono(11))
+                .foregroundStyle(Palette.ink2)
             Spacer()
             content()
                 .labelsHidden()
-                .font(.system(size: 11))
+                .font(.mono(11))
                 .frame(width: 110)
         }
     }
@@ -153,19 +152,19 @@ struct SettingsPanelView: View {
     private var testRow: some View {
         HStack(spacing: 8) {
             Button(testing ? "Testing…" : "Test connection") { test() }
-                .font(.system(size: 11))
+                .font(.mono(11))
                 .disabled(testing || parsedURL == nil)
 
             switch testResult {
             case .success(let message):
                 Label(message, systemImage: "checkmark.circle.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Palette.good)
+                    .font(.mono(10))
+                    .foregroundStyle(Palette.power)
                     .lineLimit(1)
             case .failure(let message):
                 Label(message, systemImage: "xmark.circle.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Palette.critical)
+                    .font(.mono(10))
+                    .foregroundStyle(Palette.crit)
                     .lineLimit(2)
             case nil:
                 EmptyView()

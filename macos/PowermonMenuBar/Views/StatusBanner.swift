@@ -21,7 +21,7 @@ struct StatusBanner: View {
                         .frame(width: 6, height: 6)
                     Text(message)
                         .font(.system(size: 11))
-                        .foregroundStyle(Palette.secondary)
+                        .foregroundStyle(Palette.ink2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if showsActions {
@@ -31,8 +31,8 @@ struct StatusBanner: View {
                         }
                         Button("Settings", action: onSettings)
                     }
-                    .buttonStyle(.link)
-                    .font(.system(size: 11))
+                    .buttonStyle(TextButtonStyle())
+                    .padding(.leading, -3)
                 }
                 if case .unreachable = state, let mac {
                     HStack(spacing: 8) {
@@ -40,21 +40,22 @@ struct StatusBanner: View {
                             woke = true
                             Task.detached { await WakeOnLAN.send(mac: mac) }
                         }
-                        .buttonStyle(.link)
+                        .buttonStyle(TextButtonStyle())
                         if woke {
                             Text("Wake signal sent. It can take a minute.")
-                                .foregroundStyle(Palette.secondary)
+                                .font(.system(size: 11))
+                                .foregroundStyle(Palette.ink2)
                         }
                     }
-                    .font(.system(size: 11))
+                    .padding(.leading, -3)
                     Text("Works only on the same local network as the server, not over a VPN.")
                         .font(.system(size: 10))
-                        .foregroundStyle(Palette.muted)
+                        .foregroundStyle(Palette.ink3)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(8)
-            .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+            .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
         }
     }
 
@@ -82,9 +83,9 @@ struct StatusBanner: View {
 
     private var tint: Color {
         switch state {
-        case .unreachable, .unauthorized: return Palette.critical
-        case .samplerStalled, .stale:     return Palette.warning
-        case .live, .connecting:          return Palette.muted
+        case .unreachable, .unauthorized: return Palette.crit
+        case .samplerStalled, .stale:     return Palette.warn
+        case .live, .connecting:          return Palette.ink3
         }
     }
 }

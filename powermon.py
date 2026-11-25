@@ -90,7 +90,7 @@ DEFAULTS = {
              "topic": "powermon", "discovery_prefix": "homeassistant", "interval_s": 30.0},
     # An OpenAI-compatible chat endpoint that reads prices out of a contract.
     # Empty base_url or model = off. File-only for the same reason as [mqtt].
-    "llm": {"base_url": "", "api_key": "", "model": "", "timeout": 60.0},
+    "llm": {"base_url": "", "api_key": "", "model": "", "timeout": 60.0, "extra_body": ""},
 }
 
 
@@ -2421,6 +2421,15 @@ def llm_config(cfg: dict) -> dict:
         raise ValueError("llm.timeout must be a number of seconds") from None
     if not m["timeout"] > 0:
         raise ValueError("llm.timeout must be above 0")
+    # Provider-specific request fields, such as the switch that stops a
+    # reasoning model thinking at length before a simple extraction.
+    try:
+        m["extra"] = json.loads(str(m.get("extra_body") or "").strip() or "{}")
+    except ValueError:
+        raise ValueError("llm.extra_body must be a JSON object, for example "
+                         '\'{"chat_template_kwargs": {"enable_thinking": false}}\'') from None
+    if not isinstance(m["extra"], dict) or {"model", "messages"} & set(m["extra"]):
+        raise ValueError("llm.extra_body must be a JSON object and may not set model or messages")
     m["host"] = parts.hostname if m["base_url"] else None   # never the path, a user:pass or the key
     m["configured"] = bool(m["base_url"] and m["model"])
     return m
@@ -2502,10 +2511,16 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+# Reasoning models spend this budget thinking before they write anything, so it
+# covers both; the answer itself is a few hundred tokens.
+LLM_MAX_TOKENS = 6000
+
+
 def llm_complete(llm: dict, system: str, user: str, opener=None) -> str:
     """POST one chat completion and return the reply's text. Raises
     ContractError; no message it carries can contain the API key."""
-    body = json.dumps({"model": llm["model"], "temperature": 0, "max_tokens": 1200,
+    body = json.dumps({"temperature": 0, "max_tokens": LLM_MAX_TOKENS, **llm.get("extra", {}),
+                       "model": llm["model"],
                        "messages": [{"role": "system", "content": system},
                                     {"role": "user", "content": user}]}).encode()
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -2536,6 +2551,10 @@ def llm_complete(llm: dict, system: str, user: str, opener=None) -> str:
         raise ContractError(502, f"the model server at {host} did not return a JSON completion") from None
     reply = dig(payload, "choices.0.message.content")
     if not isinstance(reply, str) or not reply.strip():
+        if dig(payload, "choices.0.finish_reason") == "length":
+            raise ContractError(502, f"the model at {host} used its whole reply budget before "
+                                     "answering; pick a model that reasons less, or switch its "
+                                     "reasoning off with llm.extra_body")
         raise ContractError(502, f"the model server at {host} returned no answer")
     return reply
 

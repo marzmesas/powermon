@@ -239,6 +239,17 @@ model = ""         # the provider's model id
 timeout = 60.0
 ```
 
+Some hosted models reason at length before answering, which is slow and can
+use up the whole reply. `extra_body` adds fields to the request as one JSON
+object; on NVIDIA's endpoint this switches the reasoning off:
+
+```toml
+extra_body = '{"chat_template_kwargs": {"enable_thinking": false}}'
+```
+
+The setting is specific to the provider, so leave it out unless the analysis
+is slow or fails with "used its whole reply budget".
+
 `[llm]` can only be set in `config.toml`, never from the web, because it
 holds a key and names a host the daemon sends data to. `--show-config` hides
 the key. An admin key is needed to use the feature, and powermon runs one

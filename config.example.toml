@@ -217,3 +217,7 @@ month_budget = 0           # this month's cost so far, in the tariff currency; o
 # api_key = ""
 # model = ""
 # timeout = 60.0
+# Extra fields for the request body, as one JSON object. Some hosted models
+# "think" at length before answering, which is slow and can use up the whole
+# reply; on NVIDIA's endpoint this turns that off:
+# extra_body = '{"chat_template_kwargs": {"enable_thinking": false}}'

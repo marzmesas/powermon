@@ -293,7 +293,7 @@ class LlmClientTests(unittest.TestCase):
         self.assertIsNone(without["auth"])
         body = with_key["body"]
         self.assertEqual(body["model"], "test/model")
-        self.assertEqual((body["temperature"], body["max_tokens"]), (0, 1200))
+        self.assertEqual((body["temperature"], body["max_tokens"]), (0, powermon.LLM_MAX_TOKENS))
         self.assertEqual([m["role"] for m in body["messages"]], ["system", "user"])
         self.assertNotIn("response_format", body)
 
@@ -488,3 +488,40 @@ class RouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtraBodyTests(unittest.TestCase):
+    def cfg(self, extra):
+        return {"llm": {"base_url": "http://127.0.0.1:1/v1", "model": "m", "extra_body": extra}}
+
+    def test_extra_fields_reach_the_request_but_cannot_replace_model_or_messages(self):
+        llm = powermon.llm_config(self.cfg('{"chat_template_kwargs": {"enable_thinking": false}, "max_tokens": 900}'))
+        seen = {}
+
+        class Reply:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self, n): return b'{"choices": [{"message": {"content": "{}"}}]}'
+
+        def opener(request, timeout):
+            seen.update(json.loads(request.data))
+            return Reply()
+
+        powermon.llm_complete(llm, "sys", "user", opener)
+        self.assertEqual(seen["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual((seen["max_tokens"], seen["model"]), (900, "m"))
+        for bad in ("not json", "[1]", '{"model": "x"}', '{"messages": []}'):
+            with self.assertRaises(ValueError, msg=bad):
+                powermon.llm_config(self.cfg(bad))
+
+    def test_a_reply_cut_off_by_reasoning_says_so(self):
+        llm = powermon.llm_config(self.cfg(""))
+
+        class Reply:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self, n): return b'{"choices": [{"finish_reason": "length", "message": {"content": ""}}]}'
+
+        with self.assertRaises(powermon.ContractError) as caught:
+            powermon.llm_complete(llm, "s", "u", lambda request, timeout: Reply())
+        self.assertIn("reply budget", str(caught.exception))

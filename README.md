@@ -98,8 +98,24 @@ GPU and RAPL passthrough are documented but untested on real hardware.
 | Client | What it is |
 |---|---|
 | **Web dashboard** | served by powermon itself; the full view, including history |
-| **`pwr`** | terminal readout: `pwr` (snapshot), `pwr -w` (live), `pwr --json`, `pwr run -- <command>` ([prices one command](#training-runs)). For a remote instance set `POWERMON_TOKEN` or pass `--token` |
+| **`pwr`** | terminal readout in the dashboard's colours: `pwr` (snapshot), `pwr -w` (live), `pwr --json`, `pwr run -- <command>` ([prices one command](#training-runs)). `--no-color` (or `NO_COLOR`, or piping) gives plain text; `--color` forces colour for `less -R`. For a remote instance set `POWERMON_TOKEN` or pass `--token` |
 | **macOS menu bar app** | wall watts in the menu bar, and a panel with meters, totals, the run in progress, active alerts and GPU processes. See [`macos/`](macos/README.md) |
+
+Plain-text output of `pwr --no-color`:
+
+```
+  ϟ   powermon  my-server  [IDLE]              updated 23:52:19
+ (◉)  104 W   €0.016/h
+  ‿   Idle at 104 W. That is €0.38 a day for doing nothing.
+
+ GPU  ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   29 W   42 °C
+ CPU  ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   30 W   45 °C
+ REST ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   45 W
+      0                                     500 W
+
+ VRAM 22.6/24 G · RAM 5.5/31 G · DISK 41 %
+ TODAY €0.36 · MONTH €2.99 · PROJECTED €11.48
+```
 
 The dashboard shows:
 

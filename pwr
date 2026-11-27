@@ -3,6 +3,7 @@
 
   pwr            one snapshot
   pwr -w         live, refreshes every 2s (Ctrl-C to quit)
+  pwr --no-color plain text (also when piped or NO_COLOR is set); --color forces colour
   pwr --json     raw JSON from the API
   pwr --url URL  point at a different host (default: from config.toml)
   pwr run -- CMD run CMD, then print what its duration cost
@@ -15,7 +16,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -24,10 +28,66 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-BLOCKS = "▁▂▃▄▅▆▇█"
-RESET, DIM, BOLD = "\033[0m", "\033[2m", "\033[1m"
-BLUE, ORANGE, GREEN, RED = "\033[38;5;33m", "\033[38;5;209m", "\033[38;5;35m", "\033[38;5;167m"
-YELLOW = "\033[38;5;179m"
+RESET = "\033[0m"
+
+# The dashboard's dark palette. role -> (foreground, background, bold).
+INK, MUTED, FAINT, UNLIT, PAGE = "e7f2ed", "849a90", "5d7068", "26352e", "0b1310"
+MINT, BLUE, REST, AMBER, WARN, CRIT = "4eeaac", "56b9ff", "86a497", "ffbb1c", "ff7d45", "ff5c5c"
+STYLE = {
+    "plain": (None, None, False), "ink": (INK, None, False), "bold": (INK, None, True),
+    "watts": (INK, None, True), "muted": (MUTED, None, False), "faint": (FAINT, None, False),
+    "unlit": (UNLIT, None, False), "mint": (MINT, None, False), "blue": (BLUE, None, False),
+    "rest": (REST, None, False), "money": (AMBER, None, False), "warn": (WARN, None, False),
+    "crit": (CRIT, None, False), "title": (INK, None, True),
+    "chip-working": (PAGE, MINT, True), "chip-alert": (PAGE, WARN, True),
+}
+
+
+def _rgb(h: str) -> tuple[int, int, int]:
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _near256(h: str) -> int:
+    """Nearest xterm-256 entry: the 6x6x6 cube or the grey ramp, whichever is closer."""
+    r, g, b = _rgb(h)
+    lv = (0, 95, 135, 175, 215, 255)
+    ci = [min(range(6), key=lambda i: abs(lv[i] - v)) for v in (r, g, b)]
+    cube = 16 + 36 * ci[0] + 6 * ci[1] + ci[2]
+    gi = min(range(24), key=lambda i: abs(8 + 10 * i - (r + g + b) / 3))
+    dist = lambda c: sum((x - y) ** 2 for x, y in zip((r, g, b), c))
+    return cube if dist([lv[i] for i in ci]) <= dist([8 + 10 * gi] * 3) else 232 + gi
+
+
+def sgr(role: str, mode: str | None) -> str:
+    """Escape prefix for a role; empty when colour is off or the role is unstyled."""
+    fg, bg, bold = STYLE.get(role, STYLE["plain"])
+    codes = ["1"] if bold else []
+    for hexv, base in ((fg, 38), (bg, 48)):
+        if hexv:
+            codes.append(f"{base};2;{';'.join(map(str, _rgb(hexv)))}" if mode == "true"
+                         else f"{base};5;{_near256(hexv)}")
+    return f"\033[{';'.join(codes)}m" if mode and codes else ""
+
+
+def paint(segs: list, mode: str | None) -> str:
+    out = []
+    merged: list = []
+    for role, text in segs:  # one escape pair per run of the same role
+        if merged and merged[-1][0] == role:
+            merged[-1] = (role, merged[-1][1] + text)
+        else:
+            merged.append((role, text))
+    for role, text in merged:
+        pre = sgr(role, mode)
+        out.append(f"{pre}{text}{RESET}" if pre else text)
+    return "".join(out)
+
+
+def color_mode(isatty: bool, env=os.environ, no_color: bool = False, force: bool = False):
+    """None (no escapes), "256" or "true". The flag beats NO_COLOR beats --color beats the TTY test."""
+    if no_color or "NO_COLOR" in env or not (force or isatty):
+        return None
+    return "true" if env.get("COLORTERM", "").lower() in ("truecolor", "24bit") else "256"
 
 
 def default_url() -> str:
@@ -58,77 +118,271 @@ def fetch(url: str, token: str | None = None) -> dict:
         return json.load(resp)
 
 
-def spark(values: list, width: int = 22) -> str:
-    pts = [v for v in values if v is not None]
-    if len(pts) < 2:
-        return " " * width
-    step = max(1, len(pts) // width)
-    sampled = pts[-width * step::step][-width:]
-    lo, hi = min(sampled), max(sampled)
-    span = (hi - lo) or 1.0
-    return "".join(BLOCKS[min(7, int((v - lo) / span * 7.99))] for v in sampled)
+MASCOT = (("money", " ϟ "), ("mint", "(◉)"), ("mint", " ‿ "))  # the Watcher: bolt, one eye, smile
+MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+INDENT = 6  # mascot column: text and bars line up from here
 
 
-def bar(frac: float, width: int = 10) -> str:
-    filled = max(0, min(width, round(frac * width)))
-    return "█" * filled + "░" * (width - filled)
+def get(d, *path):
+    """d[a][b]... or None; any missing or non-dict link gives None."""
+    for key in path:
+        d = d.get(key) if isinstance(d, dict) else None
+    return d
 
 
-def render(d: dict, color: bool = True) -> str:
-    def c(code: str, s: str) -> str:
-        return f"{code}{s}{RESET}" if color else s
+def r0(x: float) -> int:
+    return int(x + 0.5) if x >= 0 else -int(-x + 0.5)  # half away from zero, as Swift does
 
-    p, sym = d["power"], d["meta"]["symbol"]
-    gpu, cpu, tot = d["gpu"], d["cpu"], d["totals"]
-    inner = 44
+
+def cash(v: float, sym: str) -> str:
+    return f"{sym}{v:.0f}" if abs(v) >= 100 else f"{sym}{v:.2f}"
+
+
+def kwh(v: float) -> str:
+    return f"{v:.0f}" if v >= 100 else f"{v:.2f}"
+
+
+def nice_max(watts: float) -> float:
+    """A round scale maximum strictly above watts: steps of 50 to 200, 100 to 600, 200 beyond; min 100."""
+    step = 50 if watts < 200 else 100 if watts < 600 else 200
+    return max(100, (watts // step) * step + step)
+
+
+def is_stale(d: dict, now: float) -> bool:
+    ts = get(d, "ts")
+    return ts is not None and now - ts > max(10, 5 * (get(d, "meta", "interval") or 2))
+
+
+def state_of(d: dict, now: float) -> str:
+    if is_stale(d, now):
+        return "nodata"
+    alerts = d.get("alerts") or []
+    if alerts or get(d, "alert", "active"):
+        return "alert"
+    return "working" if d.get("busy") else "idle"
+
+
+def _since(ts: float, now: float) -> str:
+    t, n = time.localtime(ts), time.localtime(now)
+    clock = f"{t.tm_hour:02d}:{t.tm_min:02d}"
+    return clock if t[:3] == n[:3] else f"{t.tm_mday} {MONTHS[t.tm_mon - 1]}, {clock}"
+
+
+def speak(d: dict, now: float | None = None) -> list:
+    """The one sentence as (role, text) pieces, same words as the dashboard and Speech.swift."""
+    now = time.time() if now is None else now
+    out: list = []
+    put = lambda text, role="plain": out.append((role, text))
+    if is_stale(d, now):
+        secs = now - d["ts"]
+        mins = r0(secs / 60)
+        span = f"{r0(secs)} seconds" if secs < 90 else f"{mins} minute{'' if mins == 1 else 's'}"
+        return [("plain", f"No reading for {span}. The figures are the last ones received.")]
+    sym = get(d, "meta", "symbol") or ""
+    total, hourly = get(d, "power", "total_w"), get(d, "power", "cost_per_h")
+    watts = f"{r0(total)} W" if total is not None else "- W"
+    money = get(d, "meta", "mode") != "none" and hourly is not None
+    alerts = d.get("alerts") or []
+    idle_alert = next((a for a in alerts if a.get("kind") == "idle"), None)
+    if idle_alert is None and get(d, "alert", "active"):
+        idle_alert = {}
+    others = [a for a in alerts if a.get("kind") != "idle"]
+    if not d.get("busy") and idle_alert is not None:
+        put("Idle, but drawing ")
+        put(watts, "watts")
+        since = idle_alert.get("since")
+        if since is not None and d.get("ts") is not None:
+            mins = max(1, r0((d["ts"] - since) / 60))
+            put(f" for {mins} minute{'' if mins == 1 else 's'}")
+        put(", above the idle alert threshold.")
+        if money:
+            put(" That is ")
+            put(cash(hourly * 24, sym), "money")
+            put(" a day.")
+    elif d.get("busy"):
+        put("Working: ")
+        put(watts, "watts")
+        if money:
+            put(", which is ")
+            put(f"{cash(hourly, sym)} an hour", "money")
+        put(".")
+        run = d.get("run")
+        if isinstance(run, dict) and (run.get("start") or 0) > 0:
+            if money and run.get("cost") is not None:
+                put(" This run has cost ")
+                put(cash(run["cost"], sym), "money")
+            elif run.get("kwh") is not None:
+                put(f" This run has used {kwh(run['kwh'])} kWh")
+            else:
+                put(" This run has been going")
+            put(f" since {_since(run['start'], now)}.")
+    else:
+        put("Idle at ")
+        put(watts, "watts")
+        put(".")
+        if money:
+            put(" That is ")
+            put(f"{cash(hourly * 24, sym)} a day", "money")
+            put(" for doing nothing.")
+        elif total is not None:
+            put(f" That is {kwh(total * 24 / 1000)} kWh a day for doing nothing.")
+    if others:
+        more = f", and {len(others) - 1} more." if len(others) > 1 else "."
+        put(f" Alert: {others[0].get('message', '')}{more}")
+    return out
+
+
+def plain(segs: list) -> str:
+    return "".join(t for _, t in segs)
+
+
+def wrap(segs: list, width: int) -> list:
+    """Greedy word wrap of role-tagged text into lines of at most width columns."""
+    lines, cur, n = [], [], 0
+    for role, text in segs:
+        for word in re.findall(r"\s+|\S+", text):
+            if n + len(word) > width and n and not word.isspace():
+                lines.append(cur)
+                cur, n = [], 0
+            if not n and word.isspace():
+                continue
+            cur.append((role, word))
+            n += len(word)
+    return lines + [cur] if cur else lines
+
+
+def bar_cells(w, scale: float, width: int) -> int:
+    """Lit segments for w watts on a 0..scale bar; any real draw shows at least one."""
+    if w is None or w <= 0:
+        return 0
+    return min(width, max(1, r0(w / scale * width)))
+
+
+def bars(d: dict, width: int, mode) -> list:
+    p, gpu = d.get("power") or {}, d.get("gpu") or {}
+    total, cpu_w = p.get("total_w"), p.get("cpu_w")
+    has_gpu = bool(gpu.get("present")) and p.get("gpu_w") is not None
+    rest = p.get("other_w") if has_gpu else (max(0, total - (cpu_w or 0)) if total is not None else None)
+    peaks = [get(d, "totals", k, "peak_w") for k in ("today", "month", "all")]
+    scale = nice_max(max([x for x in [total, *peaks] if x is not None] or [0]))
+    on, off = ("▮", "▮") if mode else ("█", "░")
+    rows = [("GPU", p.get("gpu_w"), gpu.get("temp"), "mint")] if has_gpu else []
+    rows += [("CPU", cpu_w, get(d, "cpu", "temp"), "blue"), ("REST", rest, None, "rest")]
+    bw = width - 1 - 5 - 1 - 14
+    out = []
+    for label, w, temp, role in rows:
+        n = bar_cells(w, scale, bw)
+        val = f"{r0(w):>4} W" if w is not None else "   - W"
+        deg = f"  {r0(temp):>3} °C" if temp is not None else " " * 7
+        out.append([("plain", " "), ("muted", f"{label:<5}"), (role, on * n), ("unlit", off * (bw - n)),
+                    ("plain", " "), ("watts", val), ("muted", deg)])
+    top = f"{scale:.0f} W"
+    out.append([("faint", " " * 6 + "0" + " " * (bw - 1 - len(top)) + top)])
+    return out
+
+
+def level(pct: float) -> str:
+    return "crit" if pct >= 90 else "warn" if pct >= 75 else "ink"
+
+
+def readouts(d: dict) -> list:
+    items = []
+    gpu = d.get("gpu") or {}
+    used, tot = gpu.get("mem_used"), gpu.get("mem_total")
+    if used is not None and tot:
+        items.append(("VRAM", f"{used / 1024:.1f}/{tot / 1024:.0f} G", used / tot * 100))
+    m = d.get("mem") or {}
+    if m.get("used_gib") is not None and m.get("total_gib"):
+        items.append(("RAM", f"{m['used_gib']:.1f}/{m['total_gib']:.0f} G", m["used_gib"] / m["total_gib"] * 100))
+    pct = get(d, "disk", "pct")
+    if pct is not None:
+        items.append(("DISK", f"{r0(pct)} %", pct))
+    segs: list = [("plain", " ")]
+    for i, (label, value, pc) in enumerate(items):
+        segs += ([("faint", " · ")] if i else []) + [("muted", label + " "), (level(pc), value)]
+    return segs if items else []
+
+
+def costline(d: dict, width: int) -> list:
+    sym, money = get(d, "meta", "symbol") or "", get(d, "meta", "mode") != "none"
+    t = d.get("totals") or {}
+    fmt = (lambda c, k: cash(c, sym)) if money else (lambda c, k: f"{kwh(k)} kWh")
+    items = []
+    for label, src, ck, kk in (("TODAY", "today", "cost", "kwh"), ("MONTH", "month", "cost", "kwh"),
+                               ("PROJECTED", "month", "projected_30d_cost", "projected_30d_kwh"),
+                               ("IDLE", "month", "idle_cost", "idle_kwh")):
+        c, k = get(t, src, ck), get(t, src, kk)
+        if (c if money else k) is not None:
+            items.append((label, fmt(c, k)))
+    wide = lambda: 1 + sum(len(a) + len(b) + 1 for a, b in items) + 3 * (len(items) - 1)
+    for drop in ("PROJECTED", "IDLE"):  # the least essential figures go first
+        if wide() > width:
+            items = [i for i in items if i[0] != drop]
+    segs: list = [("plain", " ")]
+    for i, (a, b) in enumerate(items):
+        segs += ([("faint", " · ")] if i else []) + [("muted", a + " "), ("money" if money else "ink", b)]
+    return segs if items else []
+
+
+def notes(d: dict, width: int, now: float) -> list:
     lines = []
-    title = f" {d['meta']['host']} · {'training' if d['busy'] else 'idle'} "
-    lines.append("┌─" + title + "─" * (inner - len(title) + 1) + "┐")
+    clip = lambda s: s if len(s) <= width - 3 else s[: width - 4] + "…"
+    for a in d.get("alerts") or []:
+        if a.get("kind") != "idle":
+            lines.append([("warn", " ▲ " + clip(a.get("message", "")))])
+    s = d.get("suspend")
+    if isinstance(s, dict) and s.get("enabled") and s.get("in_s") is not None and s["in_s"] < 600:
+        lines.append([("muted", f" Going to sleep in {max(1, math.ceil(s['in_s'] / 60))} min (idle)")])
+    for issue in get(d, "health", "issues") or []:
+        role = {"error": "crit", "warn": "warn"}.get(issue.get("level"))
+        if role:
+            lines.append([(role, " ▲ " + clip(issue.get("message", "")))])
+    return lines
 
-    def row(text_plain: str, text_colored: str | None = None) -> None:
-        pad = inner - len(text_plain)
-        lines.append("│ " + (text_colored or text_plain) + " " * max(0, pad) + " │")
 
-    row(f"NOW   {p['total_w']:>5.0f} W     {sym}{p['cost_per_h']:.3f}/h",
-        c(BOLD, f"NOW   {p['total_w']:>5.0f} W") + f"     {sym}{p['cost_per_h']:.3f}/h")
+def chip(state: str, mode) -> tuple:
+    word = {"working": "WORKING", "idle": "IDLE", "alert": "ALERT", "nodata": "NO DATA"}[state]
+    if not mode:
+        return ("plain", f"[{word}]")
+    if state in ("working", "alert"):
+        return (f"chip-{state}", f" {word} ")
+    return ("mint" if state == "idle" else "muted", f"▌{word}▐")
 
-    gpu_temp = f"{gpu['temp']:.0f}" if gpu.get("temp") is not None else "--"
-    row(f"GPU   {p['gpu_w']:>5.0f} W  {spark(d['spark']['gpu'], 12)}  {gpu_temp:>3} °C",
-        c(BLUE, f"GPU   {p['gpu_w']:>5.0f} W") + f"  {spark(d['spark']['gpu'], 12)}  {gpu_temp:>3} °C")
-    cpu_temp = f"{cpu['temp']:.0f}" if cpu.get("temp") is not None else "--"
-    row(f"CPU   {p['cpu_w']:>5.0f} W  {spark(d['spark']['cpu'], 12)}  {cpu_temp:>3} °C",
-        c(ORANGE, f"CPU   {p['cpu_w']:>5.0f} W") + f"  {spark(d['spark']['cpu'], 12)}  {cpu_temp:>3} °C")
-    row(f"rest  {p['other_w']:>5.0f} W  board, RAM, drives, PSU loss",
-        c(GREEN, f"rest  {p['other_w']:>5.0f} W") + "  board, RAM, drives, PSU loss")
 
-    lines.append("├" + "─" * (inner + 2) + "┤")
-    util = gpu.get("util") or 0
-    row(f"GPU load  {bar(util / 100)} {util:>3.0f}%   mem {(gpu.get('mem_used') or 0)/1024:>4.1f}/"
-        f"{(gpu.get('mem_total') or 0)/1024:.0f} GiB")
-    row(f"CPU load  {bar(cpu['pct'] / 100)} {cpu['pct']:>3.0f}%   RAM "
-        f"{d['mem']['used_gib']:>4.1f}/{d['mem']['total_gib']:.0f} GiB")
-
-    lines.append("├" + "─" * (inner + 2) + "┤")
-    row(f"Today     {tot['today']['kwh']:>7.2f} kWh   {sym}{tot['today']['cost']:>7.2f}")
-    row(f"Month     {tot['month']['kwh']:>7.2f} kWh   {sym}{tot['month']['cost']:>7.2f}")
-    row(f"Projected {tot['month']['projected_30d_kwh']:>7.1f} kWh   "
-        f"{sym}{tot['month']['projected_30d_cost']:>7.2f}")
-    idle_share = 100 * tot["month"]["idle_kwh"] / tot["month"]["kwh"] if tot["month"]["kwh"] else 0
-    row(f"Idle      {idle_share:>7.1f} %     {sym}{tot['month']['cost'] * idle_share / 100:>7.2f}")
-    lines.append("└" + "─" * (inner + 2) + "┘")
-
-    src = "CPU measured (RAPL)" if p["source"] == "rapl" else "CPU estimated from load"
-    lines.append(c(DIM, f"{sym}{d['meta']['rate']}/kWh · {src} · "
-                        f"uptime {d['meta']['uptime_s'] / 86400:.1f}d"))
-
-    # Anything that makes the numbers above less than the whole truth. The
-    # "info" level is already covered by the source line, so it is not repeated.
-    marks = {"error": (RED, "!"), "warn": (YELLOW, "~")}
-    for issue in d.get("health", {}).get("issues", []):
-        if issue["level"] in marks:
-            colour, glyph = marks[issue["level"]]
-            lines.append(c(colour, f"{glyph} {issue['message']}"))
-    return "\n".join(lines)
+def render(d: dict, mode: str | None = None, cols: int = 64, now: float | None = None) -> str:
+    now = time.time() if now is None else now
+    width = max(44, min(64, cols))
+    state = state_of(d, now)
+    left = [("title", "powermon")]
+    if get(d, "meta", "host"):
+        left += [("plain", "  "), ("muted", d["meta"]["host"])]
+    left += [("plain", "  "), chip(state, mode)]
+    ts = d.get("ts")
+    if ts is not None:
+        stamp = "updated " + time.strftime("%H:%M:%S", time.localtime(ts))
+        gap = width - INDENT - len(plain(left)) - len(stamp)
+        if gap >= 2:
+            left += [("plain", " " * gap), ("faint", stamp)]
+    total, hourly = get(d, "power", "total_w"), get(d, "power", "cost_per_h")
+    hero = [("watts", f"{r0(total)} W" if total is not None else "- W")]
+    if get(d, "meta", "mode") != "none" and hourly is not None:
+        hero += [("plain", "   "), ("money", f"{get(d, 'meta', 'symbol') or ''}{hourly:.3f}/h")]
+    say = wrap(speak(d, now), width - INDENT) or [[]]
+    pad = [("plain", " " * INDENT)]
+    rows = [[("plain", " "), MASCOT[0], ("plain", "  ")] + left,
+            [("plain", " "), MASCOT[1], ("plain", "  ")] + hero,
+            [("plain", " "), MASCOT[2], ("plain", "  ")] + say[0]] + [pad + s for s in say[1:]]
+    rows += [[]] + bars(d, width, mode)
+    ro, cl = readouts(d), costline(d, width)
+    rows += ([[]] + [ro] if ro else []) + ([cl] if cl else [])
+    extra = notes(d, width, now)
+    rows += ([[]] + extra) if extra else []
+    for r in rows:  # no trailing blanks: they only matter when someone copies the text
+        while r and not r[-1][1].strip():
+            r.pop()
+        if r:
+            r[-1] = (r[-1][0], r[-1][1].rstrip())
+    return "\n".join(paint(r, mode) for r in rows)
 
 
 def run_command(args) -> int:
@@ -153,8 +407,9 @@ def run_command(args) -> int:
     h, m, s = int(secs // 3600), int(secs % 3600 // 60), secs % 60
     took = f"{h}h {m}m {s:.0f}s" if h else (f"{m}m {s:.0f}s" if m else f"{s:.1f}s")
     if before and after:
-        print(f"pwr: {took}, {after[0] - before[0]:.3f} kWh, "
-              f"{before[2]}{after[1] - before[1]:.3f}", file=sys.stderr)
+        mode = color_mode(sys.stderr.isatty(), os.environ, args.no_color, args.color)
+        cost = paint([("money", f"{before[2]}{after[1] - before[1]:.3f}")], mode)
+        print(f"pwr: {took}, {after[0] - before[0]:.3f} kWh, {cost}", file=sys.stderr)
     else:
         print(f"pwr: {took}; cost could not be measured (powermon unreachable)",
               file=sys.stderr)
@@ -166,6 +421,8 @@ def main() -> int:
     ap.add_argument("-w", "--watch", action="store_true", help="refresh until interrupted")
     ap.add_argument("-n", "--interval", type=float, default=2.0, help="watch interval (s)")
     ap.add_argument("--json", action="store_true", help="print the raw API payload")
+    ap.add_argument("--no-color", action="store_true", help="plain text, no escape codes")
+    ap.add_argument("--color", action="store_true", help="force colour even when piped (less -R)")
     ap.add_argument("--url", default=default_url(), help="powermon base URL")
     ap.add_argument("--token", default=os.environ.get("POWERMON_TOKEN"),
                     help="access token for a remote instance (or POWERMON_TOKEN)")
@@ -180,18 +437,26 @@ def main() -> int:
     if args.command:
         ap.error(f"unrecognised arguments: {' '.join(args.command)}")
 
-    color = sys.stdout.isatty()
+    mode = color_mode(sys.stdout.isatty(), os.environ, args.no_color, args.color)
+    emode = color_mode(sys.stderr.isatty(), os.environ, args.no_color, args.color)
+    cols = shutil.get_terminal_size((64, 24)).columns
+
+    def fail(text: str) -> int:
+        # The mascot, dimmed: nothing is being read, so nothing is alive.
+        print(f" {paint([('faint', MASCOT[1][1])], emode)}  {text}", file=sys.stderr)
+        return 1
+
     try:
         if args.json:
             print(json.dumps(fetch(args.url, args.token), indent=2))
             return 0
         if not args.watch:
-            print(render(fetch(args.url, args.token), color))
+            print(render(fetch(args.url, args.token), mode, cols))
             return 0
         print("\033[?25l", end="")  # hide cursor
         try:
             while True:
-                frame = render(fetch(args.url, args.token), color)
+                frame = render(fetch(args.url, args.token), mode, cols)
                 sys.stdout.write("\033[H\033[J" + frame + "\n")
                 sys.stdout.flush()
                 time.sleep(max(0.5, args.interval))
@@ -203,16 +468,13 @@ def main() -> int:
         # A rejected token and an absent server need different fixes, so they
         # get different messages.
         if exc.code == 401:
-            print(f"pwr: {args.url} rejected the token.\n"
-                  "     Set POWERMON_TOKEN to server.token from its config.toml, "
-                  "or use --token.", file=sys.stderr)
-        else:
-            print(f"pwr: {args.url} returned HTTP {exc.code}", file=sys.stderr)
-        return 1
+            return fail(f"pwr: {args.url} rejected the token.\n"
+                        "      Set POWERMON_TOKEN to server.token from its config.toml, "
+                        "or use --token.")
+        return fail(f"pwr: {args.url} returned HTTP {exc.code}")
     except urllib.error.URLError as exc:
-        print(f"pwr: cannot reach powermon at {args.url} ({exc.reason})\n"
-              f"     start it with:  systemctl --user start powermon", file=sys.stderr)
-        return 1
+        return fail(f"pwr: cannot reach powermon at {args.url} ({exc.reason})\n"
+                    f"      start it with:  systemctl --user start powermon")
     return 0
 
 

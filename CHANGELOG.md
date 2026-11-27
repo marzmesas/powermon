@@ -21,6 +21,11 @@ still change shape between minor versions.
   and a collapsible "where it goes" card that starts folded but still shows a
   one-line summary and any warning.
   The menu bar icon stays one colour.
+- **`pwr` restyled to match.** A mascot, a state chip, the same spoken
+  sentence, GPU/CPU/REST bars on one shared watt scale, readouts and a one-line
+  cost summary, in the dashboard's colours (24-bit when `COLORTERM` allows,
+  else 256-colour). New `--no-color` and `--color`; `NO_COLOR` and piping give
+  plain text.
 
 ## 0.2.0 (not yet tagged)
 
